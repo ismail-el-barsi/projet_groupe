@@ -1,0 +1,47 @@
+# Fichiers PDF
+*.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Airflow
+logs/
+airflow.db
+airflow.cfg
+unittests.cfg
+airflow-webserver.pid
+standalone_admin_password.txt
+
+# Data et HTML
+data/html_pages/*.html
+proxies_list.txt
+
+# CSV
+*.csv
+data/*.csv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environnement
+.env
+.env.local
