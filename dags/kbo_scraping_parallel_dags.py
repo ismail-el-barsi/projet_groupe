@@ -1,5 +1,5 @@
 """
-10 DAGs simples - Chaque DAG scrape 1 entreprise, puis se relance automatiquement
+20 DAGs simples - Chaque DAG scrape 1 entreprise, puis se relance automatiquement
 """
 import csv
 import json
@@ -26,7 +26,7 @@ from kbo_scraper import KBOScraper
 from proxy_manager import ProxyManager
 
 # Configuration
-NUM_DAGS = 10   # 10 DAGs seulement
+NUM_DAGS = 20   # 20 DAGs seulement
 CSV_FILE = os.path.join(parent_dir, "data/enterprise.csv")
 HTML_DIR = os.path.join(parent_dir, "data/html_pages")
 PROGRESS_FILE = os.path.join(parent_dir, "data/dag_progress.json")
@@ -175,43 +175,63 @@ def set_dag_progress(dag_id, index):
 
 def get_next_enterprise_for_dag(dag_id):
     """
-    Récupère la prochaine entreprise à scraper pour ce DAG
-    Commence à l'index sauvegardé, cherche la première non-scrapée
-    Ignore les entreprises qui ont échoué plus de 3 fois
+    NOUVELLE METHODE : Utilise une file d'attente centralisée
+    Tous les DAGs piochent dans la même queue
     """
+    queue_file = os.path.join(parent_dir, "data/enterprise_queue.json")
+    
+    # Créer la queue si elle n'existe pas
+    if not os.path.exists(queue_file):
+        all_enterprises = load_all_enterprises()
+        queue_data = {
+            'current_index': 0,
+            'total': len(all_enterprises)
+        }
+        os.makedirs(os.path.dirname(queue_file), exist_ok=True)
+        with open(queue_file, 'w') as f:
+            json.dump(queue_data, f, indent=2)
+    
     all_enterprises = load_all_enterprises()
     
-    if not all_enterprises:
-        print(f"❌ Aucune entreprise trouvée dans le CSV")
-        return None
-    
-    # Récupérer l'index actuel de ce DAG
-    start_index = get_dag_progress(dag_id)
-    
-    # Chercher la prochaine entreprise non-scrapée
-    for i in range(start_index, len(all_enterprises)):
-        enterprise = all_enterprises[i]
+    # Boucle pour trouver la prochaine entreprise valide
+    max_attempts = 100
+    for attempt in range(max_attempts):
+        # Lire et incrémenter l'index de manière atomique
+        try:
+            with open(queue_file, 'r') as f:
+                queue_data = json.load(f)
+        except:
+            queue_data = {'current_index': 0, 'total': len(all_enterprises)}
         
-        # Vérifier si déjà scrapée
+        current_index = queue_data.get('current_index', 0)
+        
+        # Vérifier si terminé
+        if current_index >= len(all_enterprises):
+            print(f"✅ {dag_id}: File d'attente terminée")
+            return None
+        
+        enterprise = all_enterprises[current_index]
+        
+        # Incrémenter immédiatement pour que les autres DAGs prennent la suivante
+        queue_data['current_index'] = current_index + 1
+        with open(queue_file, 'w') as f:
+            json.dump(queue_data, f, indent=2)
+        
+        # Vérifier validité
         if is_already_scraped(enterprise):
             continue
         
-        # Vérifier si en cours de scraping par un autre DAG
         if is_being_scraped(enterprise):
-            print(f"⏭️  {enterprise} est en cours de scraping par un autre DAG")
             continue
         
-        # Vérifier si elle a déjà échoué trop de fois
         failed_count = get_failed_count(enterprise)
         if failed_count >= 3:
-            print(f"⏭️  {enterprise} a échoué {failed_count} fois, passage à la suivante")
             continue
         
-        print(f"📋 DAG {dag_id}: Entreprise {enterprise} (index {i}/{len(all_enterprises)}, échecs: {failed_count})")
-        return (enterprise, i)
+        print(f"📋 {dag_id}: Entreprise {enterprise} (queue index {current_index}/{len(all_enterprises)}, échecs: {failed_count})")
+        return (enterprise, current_index)
     
-    # Si on arrive ici, toutes les entreprises sont scrapées ou ont trop échoué
-    print(f"✅ DAG {dag_id}: Toutes les entreprises accessibles sont scrapées !")
+    print(f"⚠️ {dag_id}: Aucune entreprise valide après {max_attempts} tentatives")
     return None
 
 
@@ -343,10 +363,10 @@ with DAG(
 globals()['kbo_fetch_proxies'] = dag_proxies
 
 # ============================================================================
-# DAGs 1-10 : Scraping en continu
+# DAGs 1-20 : Scraping en continu
 # ============================================================================
 
-# Créer les 10 DAGs
+# Créer les 20 DAGs
 for dag_num in range(1, NUM_DAGS + 1):
     dag_id = f"kbo_scraping_dag_{dag_num}"
     
