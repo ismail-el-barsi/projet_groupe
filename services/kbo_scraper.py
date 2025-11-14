@@ -90,8 +90,8 @@ class KBOScraper:
                 proxy_str = "DIRECT"
             
             try:
-                # URL du site KBO - formulaire de recherche
-                url = f"https://kbopub.economie.fgov.be/kbopub/zoeknummerform.html?nummer={enterprise_number}&actionLu=Rechercher"
+                # URL du site KBO - formulaire de recherche avec langue française
+                url = f"https://kbopub.economie.fgov.be/kbopub/zoeknummerform.html?lang=fr&nummer={enterprise_number}&actionLu=Rechercher"
                 
                 # Headers avec langue française
                 headers = {
