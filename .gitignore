@@ -26,6 +26,8 @@ standalone_admin_password.txt
 data/html_pages/*.html
 proxies_list.txt
 
+*.json
+
 # CSV
 *.csv
 data/*.csv
