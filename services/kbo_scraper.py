@@ -65,19 +65,23 @@ class KBOScraper:
             return True
         
         self.stats['total'] += 1
-        max_retries = 3
+        max_retries = 5  # Augmenté à 5 tentatives
         retry_count = 0
         
         while retry_count < max_retries:
+            retry_count += 1
+            
             # Mode avec ou sans proxy
-            if self.use_proxy:
+            if self.use_proxy and self.proxy_manager:
                 # Obtenir un proxy disponible
                 proxy, proxy_config = self.proxy_manager.get_proxy()
                 
                 if not proxy:
-                    logger.warning("Aucun proxy disponible, attente...")
+                    logger.warning("Aucun proxy disponible, attente de 5s...")
                     time.sleep(5)
+                    retry_count -= 1  # Ne pas compter cette tentative
                     continue
+                
                 proxy_str = proxy
             else:
                 # Mode direct sans proxy
@@ -89,13 +93,20 @@ class KBOScraper:
                 # URL du site KBO - formulaire de recherche
                 url = f"https://kbopub.economie.fgov.be/kbopub/zoeknummerform.html?nummer={enterprise_number}&actionLu=Rechercher"
                 
+                # Headers avec langue française
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept-Language': 'fr-FR,fr;q=0.9',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                }
+                
                 # Faire la requête
                 logger.info(f"Scraping {enterprise_number} avec {proxy_str}")
                 response = requests.get(
                     url,
                     proxies=proxy_config,
                     timeout=15,
-                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                    headers=headers
                 )
                 
                 # Vérifier le statut
@@ -108,9 +119,8 @@ class KBOScraper:
                 
                 if response.status_code != 200:
                     logger.error(f"Erreur HTTP {response.status_code} pour {enterprise_number}")
-                    if self.use_proxy:
+                    if self.use_proxy and proxy:
                         self.proxy_manager.release_proxy(proxy, success=False)
-                    retry_count += 1
                     continue
                 
                 # Sauvegarder la page HTML
@@ -119,39 +129,36 @@ class KBOScraper:
                     f.write(response.text)
                 
                 logger.info(f"✓ Page {enterprise_number} sauvegardée avec succès")
-                if self.use_proxy:
+                if self.use_proxy and proxy:
                     self.proxy_manager.release_proxy(proxy, success=True)
                 self.stats['success'] += 1
                 
                 # Délai respectueux entre requêtes en mode direct
-                if not self.use_proxy:
+                if not self.use_proxy or not proxy:
                     time.sleep(2)
                 
                 return True
                 
             except requests.exceptions.Timeout:
-                logger.error(f"Timeout pour {enterprise_number} avec {proxy_str}")
-                if self.use_proxy:
+                logger.error(f"Timeout pour {enterprise_number} avec {proxy_str} (tentative {retry_count}/{max_retries})")
+                if self.use_proxy and proxy:
                     self.proxy_manager.release_proxy(proxy, success=False)
-                retry_count += 1
                 time.sleep(1)
                 
             except requests.exceptions.RequestException as e:
-                logger.error(f"Erreur réseau pour {enterprise_number}: {str(e)[:100]}")
-                if self.use_proxy:
+                logger.error(f"Erreur réseau pour {enterprise_number}: {str(e)[:100]} (tentative {retry_count}/{max_retries})")
+                if self.use_proxy and proxy:
                     self.proxy_manager.release_proxy(proxy, success=False)
-                retry_count += 1
                 time.sleep(1)
                 
             except Exception as e:
-                logger.error(f"Erreur inattendue pour {enterprise_number}: {e}")
+                logger.error(f"Erreur inattendue pour {enterprise_number}: {e} (tentative {retry_count}/{max_retries})")
                 if self.use_proxy and proxy:
                     self.proxy_manager.release_proxy(proxy, success=False)
-                retry_count += 1
                 time.sleep(1)
         
         # Échec après tous les retries
-        logger.error(f"Échec du scraping de {enterprise_number} après {max_retries} tentatives")
+        logger.error(f"❌ Échec du scraping de {enterprise_number} après {max_retries} tentatives")
         self.stats['failed'] += 1
         self.stats['errors'].append({
             'enterprise_number': enterprise_number,
