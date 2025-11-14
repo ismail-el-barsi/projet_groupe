@@ -2,9 +2,9 @@
 DAGs dynamiques pour scraping parallèle par batches
 Chaque DAG traite 1000 entreprises en parallèle
 """
+import csv
 import os
 import sys
-import csv
 from datetime import datetime, timedelta
 
 from airflow import DAG
@@ -21,14 +21,13 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from fetch_proxies import fetch_all_proxies
-from proxy_manager import ProxyManager
 from kbo_scraper import KBOScraper
+from proxy_manager import ProxyManager
 from scraping_state_manager import ScrapingStateManager
 
-
 # Configuration
-BATCH_SIZE = 500   # Nombre d'entreprises par batch
-MAX_BATCHES = 40   # Maximum de batches à créer (limite pour éviter surcharge)
+BATCH_SIZE = 5   # Nombre d'entreprises par batch
+MAX_BATCHES = 10   # Maximum de batches à créer (limite pour éviter surcharge)
 CSV_FILE = os.path.join(parent_dir, "data/enterprise.csv")
 USE_PROXY = os.getenv('KBO_USE_PROXY', 'true').lower() == 'true'
 
