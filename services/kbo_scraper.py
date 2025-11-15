@@ -54,7 +54,7 @@ class KBOScraper:
             retry_queue: File d'attente pour les retry (optionnel)
         
         Returns:
-            bool: True si succès, False sinon
+            tuple: (success: bool, error_info: dict or None) - Succès et détails erreur
         """
         # Vérifier si le fichier existe déjà
         output_file = os.path.join(self.output_dir, f"{enterprise_number}.html")
@@ -62,11 +62,12 @@ class KBOScraper:
             logger.info(f"⏭ {enterprise_number} déjà scrapé, ignoré")
             self.stats['total'] += 1
             self.stats['success'] += 1
-            return True
+            return (True, None)
         
         self.stats['total'] += 1
         max_retries = 5  # Augmenté à 5 tentatives
         retry_count = 0
+        last_error = {'type': 'unknown', 'message': 'Unknown error'}
         
         while retry_count < max_retries:
             retry_count += 1
@@ -137,21 +138,30 @@ class KBOScraper:
                 if not self.use_proxy or not proxy:
                     time.sleep(2)
                 
-                return True
+                return (True, None)
                 
             except requests.exceptions.Timeout:
+                last_error = {'type': 'timeout', 'message': f'Timeout après 15s avec {proxy_str}'}
                 logger.error(f"Timeout pour {enterprise_number} avec {proxy_str} (tentative {retry_count}/{max_retries})")
                 if self.use_proxy and proxy:
                     self.proxy_manager.release_proxy(proxy, success=False)
                 time.sleep(1)
                 
             except requests.exceptions.RequestException as e:
-                logger.error(f"Erreur réseau pour {enterprise_number}: {str(e)[:100]} (tentative {retry_count}/{max_retries})")
+                error_msg = str(e)[:100]
+                if 'Max retries exceeded' in error_msg:
+                    last_error = {'type': 'ip_blocked', 'message': f'Proxy bloqué/invalide: {proxy_str}'}
+                elif 'Connection' in error_msg or 'aborted' in error_msg.lower():
+                    last_error = {'type': 'network_error', 'message': f'Connexion: {error_msg}'}
+                else:
+                    last_error = {'type': 'network_error', 'message': error_msg}
+                logger.error(f"Erreur réseau pour {enterprise_number}: {error_msg} (tentative {retry_count}/{max_retries})")
                 if self.use_proxy and proxy:
                     self.proxy_manager.release_proxy(proxy, success=False)
                 time.sleep(1)
                 
             except Exception as e:
+                last_error = {'type': 'parsing_error', 'message': f'Erreur inattendue: {str(e)[:100]}'}
                 logger.error(f"Erreur inattendue pour {enterprise_number}: {e} (tentative {retry_count}/{max_retries})")
                 if self.use_proxy and proxy:
                     self.proxy_manager.release_proxy(proxy, success=False)
@@ -162,14 +172,14 @@ class KBOScraper:
         self.stats['failed'] += 1
         self.stats['errors'].append({
             'enterprise_number': enterprise_number,
-            'error': 'Max retries exceeded'
+            'error': last_error['message']
         })
         
         # Ajouter à la file de retry basse priorité si fournie
         if retry_queue is not None:
             retry_queue.append(enterprise_number)
         
-        return False
+        return (False, last_error)
     
     def scrape_from_csv(self, csv_file, limit=None):
         """
@@ -255,5 +265,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
     main()

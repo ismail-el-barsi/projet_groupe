@@ -35,6 +35,7 @@ class ProxyManager:
         self.cooldown_until = defaultdict(lambda: datetime.min)
         self.active_requests = 0
         self.lock = Lock()
+        self.current_proxy = None  # Ajouter cet attribut
         
         self.load_proxies()
     
@@ -77,6 +78,7 @@ class ProxyManager:
                 # Proxy disponible
                 self.last_used[proxy] = now
                 self.active_requests += 1
+                self.current_proxy = proxy  # Sauvegarder le proxy actuel
                 
                 proxy_config = {
                     'http': f'http://{proxy}',
@@ -86,6 +88,7 @@ class ProxyManager:
                 return proxy, proxy_config
             
             logger.debug("Aucun proxy disponible pour le moment")
+            self.current_proxy = None
             return None, None
     
     def release_proxy(self, proxy, success=True):

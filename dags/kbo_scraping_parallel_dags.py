@@ -21,6 +21,7 @@ if services_dir not in sys.path:
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
+from dashboard_collector import DashboardCollector
 from fetch_proxies import fetch_all_proxies
 from kbo_scraper import KBOScraper
 from proxy_manager import ProxyManager
@@ -229,6 +230,10 @@ def get_next_enterprise_for_dag(dag_id):
             continue
         
         print(f"📋 {dag_id}: Entreprise {enterprise} (queue index {current_index}/{len(all_enterprises)}, échecs: {failed_count})")
+        
+        # Sauvegarder la position de ce DAG pour le dashboard
+        set_dag_progress(dag_id, current_index)
+        
         return (enterprise, current_index)
     
     print(f"⚠️ {dag_id}: Aucune entreprise valide après {max_attempts} tentatives")
@@ -291,27 +296,66 @@ def scrape_single_enterprise_task(dag_id):
             use_proxy=False
         )
     
+    # Initialiser le collecteur de stats
+    dashboard = DashboardCollector(os.path.join(parent_dir, "data"))
+    
+    # Timer pour mesurer la durée
+    start_time = datetime.now()
+    
     # Scraper l'entreprise
-    success = scraper.scrape_enterprise(enterprise_number)
+    result = scraper.scrape_enterprise(enterprise_number)
+    success = result[0] if isinstance(result, tuple) else result
+    error_info = result[1] if isinstance(result, tuple) and len(result) > 1 else None
+    
+    duration = (datetime.now() - start_time).total_seconds()
     
     # UNLOCK l'entreprise dans tous les cas
     unlock_enterprise(enterprise_number)
     
+    # Récupérer l'IP du proxy utilisé
+    proxy_ip = None
+    if USE_PROXY and hasattr(scraper, 'proxy_manager') and scraper.proxy_manager.current_proxy:
+        proxy_ip = scraper.proxy_manager.current_proxy
+    
     # Sauvegarder la progression selon le résultat
     if success:
-        set_dag_progress(dag_id, index + 1)
-        print(f"✅ {dag_id}: {enterprise_number} scrapé avec succès - index avancé à {index + 1}")
+        print(f"✅ {dag_id}: {enterprise_number} scrappé avec succès")
+        
+        # 📊 Enregistrer le succès dans les stats
+        dashboard.record_scraping_success(
+            enterprise_id=enterprise_number,
+            dag_id=dag_id,
+            proxy_ip=proxy_ip,
+            duration=duration
+        )
+        
+        # Mise à jour temps réel du dashboard
+        dashboard.update_general_stats()
     else:
         # Marquer comme échouée
         fail_count = mark_enterprise_failed(enterprise_number)
         
+        # 📊 Enregistrer l'échec dans les stats avec vraie catégorie
+        error_type = error_info['type'] if error_info else 'other'
+        error_msg = error_info['message'] if error_info else f'Échec #{fail_count}'
+        
+        dashboard.record_scraping_failure(
+            enterprise_id=enterprise_number,
+            dag_id=dag_id,
+            proxy_ip=proxy_ip,
+            error_type=error_type,
+            error_msg=error_msg
+        )
+        
+        # Mise à jour temps réel du dashboard
+        dashboard.update_general_stats()
+        
         if fail_count >= 3:
-            # Après 3 échecs, on passe à la suivante
-            set_dag_progress(dag_id, index + 1)
-            print(f"❌ {dag_id}: {enterprise_number} échec #{fail_count} - ABANDONNÉ, passage à la suivante")
+            # Après 3 échecs, on abandonne (la queue a déjà avancé)
+            print(f"❌ {dag_id}: {enterprise_number} échec #{fail_count} - ABANDONNÉ")
         else:
-            # Moins de 3 échecs, on garde le même index pour retry
-            print(f"❌ {dag_id}: {enterprise_number} échec #{fail_count}/3 - retry à la prochaine exécution")
+            # Moins de 3 échecs, retry à la prochaine exécution
+            print(f"❌ {dag_id}: {enterprise_number} échec #{fail_count}/3 - retry")
     
     # Résultat
     print(f"{'='*60}\n")
