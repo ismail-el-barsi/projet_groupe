@@ -1,71 +1,75 @@
 """
 Collecteur de statistiques pour le dashboard administrateur
-Met à jour dashboard_stats.json en temps réel
+Utilise PostgreSQL pour stocker les statistiques en temps réel
 """
 import glob
 import json
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
+import logging
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.dialects.postgresql import insert
+
+Base = declarative_base()
+
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    # Basic configuration if not already configured by Airflow
+    logging.basicConfig(level=logging.INFO)
+
+class ScrapingHistory(Base):
+    __tablename__ = 'scraping_history'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime, default=datetime.now, index=True)
+    enterprise_id = Column(String(50), index=True)
+    dag_id = Column(String(100), index=True)
+    proxy_ip = Column(String(50))
+    duration = Column(Float, default=0)
+    success = Column(Boolean, default=True)
+    error_type = Column(String(50))
+    error_msg = Column(Text)
+
+class ProxyStats(Base):
+    __tablename__ = 'proxy_stats'
+    
+    proxy_ip = Column(String(50), primary_key=True)
+    total_requests = Column(Integer, default=0)
+    successful_requests = Column(Integer, default=0)
+    failed_requests = Column(Integer, default=0)
+    status = Column(String(20), default='actif')
+    last_used = Column(DateTime)
+    last_success = Column(DateTime)
+
+class DagStatus(Base):
+    __tablename__ = 'dag_status'
+    
+    dag_id = Column(String(100), primary_key=True)
+    total_scraped = Column(Integer, default=0)
+    last_scrape = Column(DateTime)
+    status = Column(String(20), default='running')
+    current_position = Column(Integer, default=0)
 
 
 class DashboardCollector:
     def __init__(self, data_dir):
         self.data_dir = data_dir
-        self.stats_file = os.path.join(data_dir, "dashboard_stats.json")
         self.queue_file = os.path.join(data_dir, "enterprise_queue.json")
         self.failed_file = os.path.join(data_dir, "failed_enterprises.json")
         self.html_dir = os.path.join(data_dir, "html_pages")
         self.locks_dir = os.path.join(data_dir, "locks")
-        self.csv_file = os.path.join(data_dir, "enterprise.csv")
         
-    def load_stats(self):
-        """Charge les stats existantes"""
-        if os.path.exists(self.stats_file):
-            with open(self.stats_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return self._init_stats()
-    
-    def _init_stats(self):
-        """Initialise les stats"""
-        return {
-            "general": {
-                "total_scraped": 0,
-                "total_queue": 0,
-                "total_failed": 0,
-                "total_closed": 0,
-                "last_update": ""
-            },
-            "performance": {
-                "success_rate_per_minute": 0,
-                "avg_requests_per_minute": 0,
-                "total_requests_last_hour": 0,
-                "success_requests_last_hour": 0
-            },
-            "ips": {},
-            "queue": {
-                "current_index": 0,
-                "total": 0,
-                "pending": []
-            },
-            "failures": {
-                "by_type": {
-                    "ip_blocked": 0,
-                    "parsing_error": 0,
-                    "document_error": 0,
-                    "network_error": 0,
-                    "other": 0
-                },
-                "recent": []
-            },
-            "dags_status": {}
-        }
-    
-    def save_stats(self, stats):
-        """Sauvegarde les stats"""
-        with open(self.stats_file, 'w', encoding='utf-8') as f:
-            json.dump(stats, f, indent=2, ensure_ascii=False)
-    
+        # Connexion PostgreSQL (base dédiée KBO)
+        self.engine = create_engine(
+            'postgresql+psycopg2://kbo_admin:kbo_2025_secure@postgres_kbo/kbo_dashboard'
+        )
+        # create tables if they don't exist (safe for concurrent processes)
+        Base.metadata.create_all(self.engine, checkfirst=True)
+        self.Session = sessionmaker(bind=self.engine)
+        
     def count_scraped_enterprises(self):
         """Compte les fichiers HTML scrappés"""
         if not os.path.exists(self.html_dir):
@@ -112,212 +116,303 @@ class DashboardCollector:
     
     def update_general_stats(self):
         """Met à jour les statistiques générales"""
-        stats = self.load_stats()
-        
-        # Nombre total scrappé
-        total_scraped = self.count_scraped_enterprises()
-        stats['general']['total_scraped'] = total_scraped
-        
-        # Info queue
-        queue_info = self.get_queue_info()
-        current_idx = queue_info.get('current_index', 0)
-        total = queue_info.get('total', 0)
-        pending = max(0, total - current_idx)
-        
-        stats['general']['total_queue'] = pending
-        stats['queue'] = {
-            "current_index": current_idx,
-            "total": total,
-            "pending": pending
-        }
-        
-        # Échecs
-        failed_info = self.get_failed_info()
-        stats['general']['total_failed'] = len(failed_info)
-        
-        # Lire dag_progress.json pour afficher position de chaque DAG
-        dag_progress_file = os.path.join(self.data_dir, "dag_progress.json")
-        if os.path.exists(dag_progress_file):
-            try:
-                with open(dag_progress_file, 'r') as f:
-                    dag_progress = json.load(f)
-                    
-                # Mettre à jour les positions dans dags_status
-                for dag_id, position in dag_progress.items():
-                    if dag_id not in stats['dags_status']:
-                        stats['dags_status'][dag_id] = {
-                            'total_scraped': 0,
-                            'last_scrape': '',
-                            'status': 'running',
-                            'current_position': 0
-                        }
-                    stats['dags_status'][dag_id]['current_position'] = position
-            except:
-                pass
-        
-        # Timestamp
-        stats['general']['last_update'] = datetime.now().isoformat()
-        
-        self.save_stats(stats)
-        return stats
+        session = self.Session()
+        try:
+            # Nombre total scrappé
+            total_scraped = self.count_scraped_enterprises()
+            
+            # Info queue
+            queue_info = self.get_queue_info()
+            current_idx = queue_info.get('current_index', 0)
+            total = queue_info.get('total', 0)
+            pending = max(0, total - current_idx)
+            
+            # Échecs
+            failed_info = self.get_failed_info()
+            total_failed = len(failed_info)
+            
+            # Lire dag_progress.json pour afficher position de chaque DAG
+            dag_progress_file = os.path.join(self.data_dir, "dag_progress.json")
+            if os.path.exists(dag_progress_file):
+                try:
+                    with open(dag_progress_file, 'r') as f:
+                        dag_progress = json.load(f)
+                        
+                    # Mettre à jour les positions dans la base
+                    for dag_id, position in dag_progress.items():
+                        stmt = insert(DagStatus).values(
+                            dag_id=dag_id,
+                            current_position=position
+                        ).on_conflict_do_update(
+                            index_elements=['dag_id'],
+                            set_={'current_position': position}
+                        )
+                        session.execute(stmt)
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    logger.exception("Erreur lecture ou écriture dag_progress")
+            
+            return {
+                "general": {
+                    "total_scraped": total_scraped,
+                    "total_queue": pending,
+                    "total_failed": total_failed,
+                    "last_update": datetime.now().isoformat()
+                },
+                "queue": {
+                    "current_index": current_idx,
+                    "total": total,
+                    "pending": pending
+                }
+            }
+        finally:
+            session.close()
     
     def record_scraping_success(self, enterprise_id, dag_id, proxy_ip=None, duration=0):
         """Enregistre un scraping réussi"""
-        stats = self.load_stats()
-        
-        # Mise à jour général
-        stats['general']['total_scraped'] += 1
-        
-        # Performance
-        if 'scraping_history' not in stats:
-            stats['scraping_history'] = []
-        
-        stats['scraping_history'].append({
-            'timestamp': datetime.now().isoformat(),
-            'enterprise_id': enterprise_id,
-            'dag_id': dag_id,
-            'proxy_ip': proxy_ip,
-            'duration': duration,
-            'success': True
-        })
-        
-        # Garder seulement les 1000 derniers
-        if len(stats['scraping_history']) > 1000:
-            stats['scraping_history'] = stats['scraping_history'][-1000:]
-        
-        # Mise à jour IP
-        if proxy_ip:
-            if proxy_ip not in stats['ips']:
-                stats['ips'][proxy_ip] = {
-                    'total_requests': 0,
-                    'successful_requests': 0,
-                    'failed_requests': 0,
-                    'status': 'actif',
-                    'last_used': '',
-                    'last_success': ''
-                }
+        session = self.Session()
+        try:
+            # Enregistrer dans l'historique
+            history = ScrapingHistory(
+                timestamp=datetime.now(),
+                enterprise_id=enterprise_id,
+                dag_id=dag_id,
+                proxy_ip=proxy_ip,
+                duration=duration,
+                success=True
+            )
+            session.add(history)
             
-            stats['ips'][proxy_ip]['total_requests'] += 1
-            stats['ips'][proxy_ip]['successful_requests'] += 1
-            stats['ips'][proxy_ip]['last_used'] = datetime.now().isoformat()
-            stats['ips'][proxy_ip]['last_success'] = datetime.now().isoformat()
-            stats['ips'][proxy_ip]['status'] = 'actif'
-        
-        # Mise à jour DAG
-        if dag_id not in stats['dags_status']:
-            stats['dags_status'][dag_id] = {
-                'total_scraped': 0,
-                'last_scrape': '',
-                'status': 'running'
-            }
-        
-        stats['dags_status'][dag_id]['total_scraped'] += 1
-        stats['dags_status'][dag_id]['last_scrape'] = datetime.now().isoformat()
-        
-        stats['general']['last_update'] = datetime.now().isoformat()
-        
-        self.save_stats(stats)
-        # Mettre à jour les performances immédiatement
-        self.update_performance_metrics()
+            # Mise à jour IP
+            if proxy_ip:
+                stmt = insert(ProxyStats).values(
+                    proxy_ip=proxy_ip,
+                    total_requests=1,
+                    successful_requests=1,
+                    failed_requests=0,
+                    status='actif',
+                    last_used=datetime.now(),
+                    last_success=datetime.now()
+                ).on_conflict_do_update(
+                    index_elements=['proxy_ip'],
+                    set_={
+                        'total_requests': ProxyStats.total_requests + 1,
+                        'successful_requests': ProxyStats.successful_requests + 1,
+                        'last_used': datetime.now(),
+                        'last_success': datetime.now(),
+                        'status': 'actif'
+                    }
+                )
+                session.execute(stmt)
+            
+            # Mise à jour DAG
+            stmt = insert(DagStatus).values(
+                dag_id=dag_id,
+                total_scraped=1,
+                last_scrape=datetime.now(),
+                status='running'
+            ).on_conflict_do_update(
+                index_elements=['dag_id'],
+                set_={
+                    'total_scraped': DagStatus.total_scraped + 1,
+                    'last_scrape': datetime.now()
+                }
+            )
+            session.execute(stmt)
+            
+            session.commit()
+            logger.debug(
+                "Recorded scraping success: enterprise=%s dag=%s proxy=%s duration=%s",
+                enterprise_id,
+                dag_id,
+                proxy_ip,
+                duration,
+            )
+        finally:
+            session.close()
     
     def record_scraping_failure(self, enterprise_id, dag_id, proxy_ip=None, error_type='other', error_msg=''):
         """Enregistre un échec de scraping"""
-        stats = self.load_stats()
-        
-        # Mise à jour échecs
-        stats['general']['total_failed'] += 1
-        
-        if error_type in stats['failures']['by_type']:
-            stats['failures']['by_type'][error_type] += 1
-        else:
-            stats['failures']['by_type']['other'] += 1
-        
-        # Ajouter aux échecs récents
-        stats['failures']['recent'].append({
-            'timestamp': datetime.now().isoformat(),
-            'enterprise_id': enterprise_id,
-            'dag_id': dag_id,
-            'proxy_ip': proxy_ip,
-            'error_type': error_type,
-            'error_msg': error_msg
-        })
-        
-        # Garder seulement les 100 derniers échecs
-        if len(stats['failures']['recent']) > 100:
-            stats['failures']['recent'] = stats['failures']['recent'][-100:]
-        
-        # Mise à jour IP si échec proxy
-        if proxy_ip and error_type == 'ip_blocked':
-            if proxy_ip in stats['ips']:
-                stats['ips'][proxy_ip]['status'] = 'bloqué'
-                stats['ips'][proxy_ip]['failed_requests'] += 1
-        
-        stats['general']['last_update'] = datetime.now().isoformat()
-        
-        self.save_stats(stats)
-        # Mettre à jour les performances immédiatement
-        self.update_performance_metrics()
+        session = self.Session()
+        try:
+            # Enregistrer dans l'historique
+            history = ScrapingHistory(
+                timestamp=datetime.now(),
+                enterprise_id=enterprise_id,
+                dag_id=dag_id,
+                proxy_ip=proxy_ip,
+                success=False,
+                error_type=error_type,
+                error_msg=error_msg
+            )
+            session.add(history)
+            
+            # Mise à jour IP si échec proxy
+            if proxy_ip and error_type == 'ip_blocked':
+                stmt = insert(ProxyStats).values(
+                    proxy_ip=proxy_ip,
+                    total_requests=1,
+                    successful_requests=0,
+                    failed_requests=1,
+                    status='bloqué',
+                    last_used=datetime.now()
+                ).on_conflict_do_update(
+                    index_elements=['proxy_ip'],
+                    set_={
+                        'total_requests': ProxyStats.total_requests + 1,
+                        'failed_requests': ProxyStats.failed_requests + 1,
+                        'status': 'bloqué',
+                        'last_used': datetime.now()
+                    }
+                )
+                session.execute(stmt)
+            
+            session.commit()
+            logger.debug(
+                "Recorded scraping failure: enterprise=%s dag=%s proxy=%s type=%s",
+                enterprise_id,
+                dag_id,
+                proxy_ip,
+                error_type,
+            )
+        except Exception:
+            session.rollback()
+            logger.exception(
+                "Erreur en enregistrant l'échec de scraping: enterprise=%s dag=%s",
+                enterprise_id,
+                dag_id,
+            )
+            raise
+        finally:
+            session.close()
     
     def update_performance_metrics(self):
         """Calcule les métriques de performance"""
-        stats = self.load_stats()
-        
-        if 'scraping_history' not in stats or not stats['scraping_history']:
-            stats['performance'] = {
-                'success_rate_per_minute': 0,
-                'avg_requests_per_minute': 0,
-                'total_requests_last_hour': 0,
-                'success_requests_last_hour': 0
+        session = self.Session()
+        try:
+            now = datetime.now()
+            one_hour_ago = now - timedelta(hours=1)
+            
+            # Requêtes dernière heure
+            total_hour = session.query(ScrapingHistory).filter(
+                ScrapingHistory.timestamp > one_hour_ago
+            ).count()
+            
+            success_hour = session.query(ScrapingHistory).filter(
+                ScrapingHistory.timestamp > one_hour_ago,
+                ScrapingHistory.success == True
+            ).count()
+            
+            if total_hour > 0:
+                avg_requests_per_minute = total_hour / 60.0
+                success_rate = (success_hour / total_hour) * 100
+            else:
+                avg_requests_per_minute = 0
+                success_rate = 0
+            
+            return {
+                "performance": {
+                    "success_rate_per_minute": success_rate,
+                    "avg_requests_per_minute": avg_requests_per_minute,
+                    "total_requests_last_hour": total_hour,
+                    "success_requests_last_hour": success_hour
+                }
             }
-            self.save_stats(stats)
-            return
-        
-        now = datetime.now()
-        one_hour_ago = now - timedelta(hours=1)
-        one_minute_ago = now - timedelta(minutes=1)
-        
-        # Filtrer dernière heure
-        recent_hour = [
-            h for h in stats['scraping_history']
-            if datetime.fromisoformat(h['timestamp']) > one_hour_ago
-        ]
-        
-        # Filtrer dernière minute
-        recent_minute = [
-            h for h in stats['scraping_history']
-            if datetime.fromisoformat(h['timestamp']) > one_minute_ago
-        ]
-        
-        # Compter succès et échecs de la dernière heure
-        success_hour = len([h for h in recent_hour if h.get('success')])
-        
-        # Ajouter les échecs récents de la dernière heure
-        failures_hour = []
-        if 'failures' in stats and 'recent' in stats['failures']:
-            failures_hour = [
-                f for f in stats['failures']['recent']
-                if datetime.fromisoformat(f['timestamp']) > one_hour_ago
-            ]
-        
-        total_hour = success_hour + len(failures_hour)
-        
-        stats['performance']['total_requests_last_hour'] = total_hour
-        stats['performance']['success_requests_last_hour'] = success_hour
-        
-        if total_hour > 0:
-            stats['performance']['avg_requests_per_minute'] = total_hour / 60.0
-            stats['performance']['success_rate_per_minute'] = (success_hour / total_hour) * 100
-        else:
-            stats['performance']['avg_requests_per_minute'] = 0
-            stats['performance']['success_rate_per_minute'] = 0
-        
-        self.save_stats(stats)
+        finally:
+            session.close()
+    
+    def get_failures_stats(self):
+        """Récupère les statistiques d'échecs"""
+        session = self.Session()
+        try:
+            # Compter par type d'erreur
+            failures_by_type = {}
+            for error_type in ['timeout', 'ip_blocked', 'network_error', 'parsing_error', 'other']:
+                count = session.query(ScrapingHistory).filter(
+                    ScrapingHistory.success == False,
+                    ScrapingHistory.error_type == error_type
+                ).count()
+                failures_by_type[error_type] = count
+            
+            # Récupérer les 100 derniers échecs
+            recent_failures = session.query(ScrapingHistory).filter(
+                ScrapingHistory.success == False
+            ).order_by(ScrapingHistory.timestamp.desc()).limit(100).all()
+            
+            recent = [{
+                'timestamp': f.timestamp.isoformat(),
+                'enterprise_id': f.enterprise_id,
+                'dag_id': f.dag_id,
+                'proxy_ip': f.proxy_ip,
+                'error_type': f.error_type,
+                'error_msg': f.error_msg
+            } for f in recent_failures]
+            
+            return {
+                "failures": {
+                    "by_type": failures_by_type,
+                    "recent": recent
+                }
+            }
+        finally:
+            session.close()
+    
+    def get_ips_stats(self):
+        """Récupère les statistiques des IPs"""
+        session = self.Session()
+        try:
+            proxies = session.query(ProxyStats).all()
+            
+            ips_dict = {}
+            for proxy in proxies:
+                ips_dict[proxy.proxy_ip] = {
+                    'total_requests': proxy.total_requests,
+                    'successful_requests': proxy.successful_requests,
+                    'failed_requests': proxy.failed_requests,
+                    'status': proxy.status,
+                    'last_used': proxy.last_used.isoformat() if proxy.last_used else '',
+                    'last_success': proxy.last_success.isoformat() if proxy.last_success else ''
+                }
+            
+            return {"ips": ips_dict}
+        finally:
+            session.close()
+    
+    def get_dags_stats(self):
+        """Récupère les statistiques des DAGs"""
+        session = self.Session()
+        try:
+            dags = session.query(DagStatus).all()
+            
+            dags_dict = {}
+            for dag in dags:
+                dags_dict[dag.dag_id] = {
+                    'total_scraped': dag.total_scraped,
+                    'last_scrape': dag.last_scrape.isoformat() if dag.last_scrape else '',
+                    'status': dag.status,
+                    'current_position': dag.current_position
+                }
+            
+            return {"dags_status": dags_dict}
+        finally:
+            session.close()
     
     def get_dashboard_data(self):
         """Retourne toutes les données pour le dashboard"""
-        self.update_general_stats()
-        self.update_performance_metrics()
-        return self.load_stats()
+        general = self.update_general_stats()
+        performance = self.update_performance_metrics()
+        failures = self.get_failures_stats()
+        ips = self.get_ips_stats()
+        dags = self.get_dags_stats()
+        
+        return {
+            **general,
+            **performance,
+            **failures,
+            **ips,
+            **dags
+        }
 
 
 def update_dashboard_stats(data_dir=None):
@@ -326,5 +421,4 @@ def update_dashboard_stats(data_dir=None):
         data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
     
     collector = DashboardCollector(data_dir)
-    return collector.update_general_stats()
     return collector.update_general_stats()

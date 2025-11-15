@@ -108,6 +108,23 @@ services:
       start_period: 5s
     restart: always
 
+  postgres_kbo:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: kbo_admin
+      POSTGRES_PASSWORD: kbo_2025_secure
+      POSTGRES_DB: kbo_dashboard
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-kbo-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "kbo_admin", "-d", "kbo_dashboard"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
   redis:
     # Redis is limited to 7.2-bookworm due to licencing change
     # https://redis.io/blog/redis-adopts-dual-source-available-licensing/
@@ -340,3 +357,4 @@ services:
 
 volumes:
   postgres-db-volume:
+  postgres-kbo-volume:
