@@ -9,8 +9,8 @@ from airflow.operators.python import PythonOperator
 # Ajouter le répertoire services au path
 sys.path.insert(0, '/opt/airflow/services')
 
-from html_parser import parse_and_save_to_db, parse_html_file, save_to_db
 from dashboard_collector import DashboardCollector
+from html_parser import parse_and_save_to_db, parse_html_file, save_to_db
 
 # Chemins
 HTML_DIR = '/opt/airflow/data/html_pages'
