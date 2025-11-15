@@ -1,4 +1,3 @@
-import json
 import os
 import re
 from datetime import datetime
@@ -320,13 +319,7 @@ def parse_html_file(html_file_path):
     return parser.extract_data()
 
 
-def save_to_json(data, output_path):
-    """
-    DEPRECATED: Sauvegarde les données extraites en JSON.
-    Utiliser save_to_db() à la place pour enregistrer directement en BDD.
-    """
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 
 def save_to_db(data, data_dir='/opt/airflow'):
@@ -341,9 +334,9 @@ def save_to_db(data, data_dir='/opt/airflow'):
     Returns:
         dict: Résultat de l'insertion {'success': bool, 'numero_entreprise': str}
     """
-    import sys
     import logging
-    
+    import sys
+
     # Importer le collector (ajuster le path si nécessaire)
     collector_path = os.path.join(os.path.dirname(__file__))
     if collector_path not in sys.path:

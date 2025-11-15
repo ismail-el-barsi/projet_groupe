@@ -1,28 +1,22 @@
-from airflow import DAG
-from airflow.operators.python import PythonOperator
-from datetime import datetime, timedelta
 import os
 import sys
-import json
-import glob
+from datetime import datetime, timedelta
+
+from airflow import DAG
+from airflow.operators.python import PythonOperator
 
 # Ajouter le répertoire services au path
 sys.path.insert(0, '/opt/airflow/services')
 
-from data_validator import DataValidator, generate_validation_summary
 from dashboard_collector import DashboardCollector
-
+from data_validator import DataValidator, generate_validation_summary
 
 # Chemins
-REPORTS_DIR = '/opt/airflow/data/validation_reports'
 DATA_DIR = '/opt/airflow/data'
 
 
 def validate_data_quality(**context):
     """Tâche principale de validation de la qualité des données depuis PostgreSQL."""
-    # Créer le répertoire de rapports s'il n'existe pas
-    os.makedirs(REPORTS_DIR, exist_ok=True)
-    
     # Initialiser le collecteur pour accéder à la BDD
     collector = DashboardCollector(DATA_DIR)
     
@@ -122,32 +116,21 @@ def validate_data_quality(**context):
         'details_validations': results
     }
     
+    # Persister le rapport de validation en base
+    try:
+        collector.insert_validation_report(report)
+    except Exception as e:
+        print(f"⚠️  Impossible d'insérer le rapport de validation en BDD: {e}")
+
     # Générer le résumé textuel
     summary = generate_validation_summary(report)
     print(summary)
     
-    # Sauvegarder le rapport complet
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    report_file = os.path.join(REPORTS_DIR, f'validation_report_{timestamp}.json')
-    
-    with open(report_file, 'w', encoding='utf-8') as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
-    
-    print(f"📄 Rapport complet sauvegardé: {report_file}")
-    
-    # Sauvegarder aussi le dernier rapport (pour faciliter l'accès)
-    latest_report_file = os.path.join(REPORTS_DIR, 'latest_validation_report.json')
-    with open(latest_report_file, 'w', encoding='utf-8') as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
-    
-    # Sauvegarder le résumé textuel
-    summary_file = os.path.join(REPORTS_DIR, f'validation_summary_{timestamp}.txt')
-    with open(summary_file, 'w', encoding='utf-8') as f:
-        f.write(summary)
+    # Afficher résumé dans les logs
+    print(f"📄 Rapport de validation généré")
     
     # Pousser les statistiques dans XCom
     context['ti'].xcom_push(key='validation_stats', value=report['statistiques'])
-    context['ti'].xcom_push(key='report_file', value=report_file)
     
     return report['statistiques']
 
@@ -160,7 +143,7 @@ def generate_dashboard_data(**context):
         print("⚠️  Aucune statistique disponible")
         return
     
-    # Créer un fichier JSON pour le dashboard
+    # Métriques dashboard (déjà disponibles via PostgreSQL)
     dashboard_data = {
         'last_update': datetime.now().isoformat(),
         'source': 'PostgreSQL',
@@ -173,11 +156,14 @@ def generate_dashboard_data(**context):
         'status': 'success' if stats['pourcentage_valides'] >= 80 else 'warning'
     }
     
-    dashboard_file = os.path.join(REPORTS_DIR, 'dashboard_metrics.json')
-    with open(dashboard_file, 'w', encoding='utf-8') as f:
-        json.dump(dashboard_data, f, ensure_ascii=False, indent=2)
-    
-    print(f"📊 Métriques dashboard sauvegardées: {dashboard_file}")
+    # Persister les métriques récentes dans la BDD
+    try:
+        collector = DashboardCollector(DATA_DIR)
+        collector.upsert_dashboard_metrics('latest_validation', dashboard_data)
+    except Exception as e:
+        print(f"⚠️  Impossible d'enregistrer les métriques du dashboard en BDD: {e}")
+
+    print(f"📊 Métriques dashboard disponibles via PostgreSQL")
     print(f"✓ Source: PostgreSQL (table entreprises)")
     print(f"✓ Taux de validité: {stats['pourcentage_valides']}%")
     print(f"✓ Taux d'erreurs: {100 - stats['pourcentage_valides']}%")

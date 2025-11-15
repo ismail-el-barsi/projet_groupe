@@ -1,16 +1,16 @@
-from airflow import DAG
-from airflow.operators.python import PythonOperator
-from datetime import datetime, timedelta
 import os
 import sys
-import json
+from datetime import datetime, timedelta
 from pathlib import Path
+
+from airflow import DAG
+from airflow.operators.python import PythonOperator
 
 # Ajouter le répertoire services au path
 sys.path.insert(0, '/opt/airflow/services')
 
-from html_parser import parse_html_file, save_to_db, parse_and_save_to_db
-
+from html_parser import parse_and_save_to_db, parse_html_file, save_to_db
+from dashboard_collector import DashboardCollector
 
 # Chemins
 HTML_DIR = '/opt/airflow/data/html_pages'
@@ -64,12 +64,12 @@ def process_html_files(**context):
         'error_details': errors,
         'storage': 'PostgreSQL (kbo_dashboard)'
     }
-    
-    # Optionnel: sauvegarder aussi un rapport JSON pour suivi
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    report_path = os.path.join(OUTPUT_DIR, 'processing_report.json')
-    with open(report_path, 'w', encoding='utf-8') as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
+    # Persister le rapport dans la BDD
+    try:
+        collector = DashboardCollector('/opt/airflow/data')
+        collector.insert_processing_report(report)
+    except Exception as e:
+        print(f"⚠️  Impossible d'insérer le rapport de traitement en BDD: {e}")
     
     print(f"\n{'='*50}")
     print(f"RAPPORT DE TRAITEMENT (HTML → PostgreSQL)")

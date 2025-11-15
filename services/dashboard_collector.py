@@ -4,14 +4,16 @@ Utilise PostgreSQL pour stocker les statistiques en temps réel
 """
 import glob
 import json
+import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-import logging
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text
+
+from sqlalchemy import (Boolean, Column, DateTime, Float, Integer, String,
+                        Text, create_engine)
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.dialects.postgresql import insert, JSONB
 
 Base = declarative_base()
 
@@ -72,6 +74,38 @@ class Entreprise(Base):
     forme_juridique = Column(String(100))
     numero_tva = Column(String(50))
     date_creation = Column(String(50))
+
+
+class ProcessingReport(Base):
+    __tablename__ = 'processing_reports'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    total_files = Column(Integer)
+    processed = Column(Integer)
+    errors = Column(Integer)
+    payload = Column(JSONB)
+
+
+class ValidationReport(Base):
+    __tablename__ = 'validation_reports'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    source = Column(String(100))
+    statistiques = Column(JSONB)
+    repartition_erreurs = Column(JSONB)
+    erreurs_localisation = Column(JSONB)
+    details = Column(JSONB)
+
+
+class DashboardMetric(Base):
+    __tablename__ = 'dashboard_metrics'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(String(100), unique=True, index=True, nullable=False)
+    last_update = Column(DateTime, default=datetime.now)
+    metrics = Column(JSONB)
 
 
 class DashboardCollector:
@@ -535,6 +569,79 @@ class DashboardCollector:
             return count
         finally:
             session.close()
+
+    def insert_processing_report(self, report: dict):
+        """Insère un rapport de traitement (HTML -> BDD) dans `processing_reports`."""
+        session = self.Session()
+        try:
+            pr = ProcessingReport(
+                total_files=report.get('total_files'),
+                processed=report.get('processed'),
+                errors=report.get('errors'),
+                payload=report
+            )
+            session.add(pr)
+            session.commit()
+            logger.info(f"Processing report inserted id={pr.id}")
+            return {'success': True, 'id': pr.id}
+        except Exception:
+            session.rollback()
+            logger.exception("Erreur insertion processing report")
+            return {'success': False, 'error': 'insertion_failed'}
+        finally:
+            session.close()
+
+    def insert_validation_report(self, report: dict):
+        """Insère un rapport de validation dans `validation_reports`."""
+        session = self.Session()
+        try:
+            vr = ValidationReport(
+                source=report.get('source', 'unknown'),
+                statistiques=report.get('statistiques'),
+                repartition_erreurs=report.get('repartition_erreurs'),
+                erreurs_localisation=report.get('erreurs_localisation'),
+                details=report.get('details_validations') if report.get('details_validations') is not None else report.get('details')
+            )
+            session.add(vr)
+            session.commit()
+            logger.info(f"Validation report inserted id={vr.id}")
+            return {'success': True, 'id': vr.id}
+        except Exception:
+            session.rollback()
+            logger.exception("Erreur insertion validation report")
+            return {'success': False, 'error': 'insertion_failed'}
+        finally:
+            session.close()
+
+    def upsert_dashboard_metrics(self, key: str, metrics: dict):
+        """Insère ou met à jour les métriques du dashboard dans `dashboard_metrics`.
+
+        key: identifiant (e.g. 'latest')
+        metrics: dict JSON serializable
+        """
+        session = self.Session()
+        try:
+            stmt = insert(DashboardMetric).values(
+                key=key,
+                last_update=datetime.now(),
+                metrics=metrics
+            ).on_conflict_do_update(
+                index_elements=['key'],
+                set_={
+                    'last_update': datetime.now(),
+                    'metrics': stmt.excluded.metrics
+                }
+            )
+            session.execute(stmt)
+            session.commit()
+            logger.info(f"Dashboard metrics upserted key={key}")
+            return {'success': True}
+        except Exception:
+            session.rollback()
+            logger.exception("Erreur upsert dashboard metrics")
+            return {'success': False, 'error': 'upsert_failed'}
+        finally:
+            session.close()
     
     def get_dashboard_data(self):
         """Retourne toutes les données pour le dashboard"""
@@ -558,5 +665,9 @@ def update_dashboard_stats(data_dir=None):
     if not data_dir:
         data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
     
+    collector = DashboardCollector(data_dir)
+    return collector.update_general_stats()
+    collector = DashboardCollector(data_dir)
+    return collector.update_general_stats()
     collector = DashboardCollector(data_dir)
     return collector.update_general_stats()
