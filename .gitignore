@@ -38,7 +38,8 @@ data/*.csv
 *.swp
 *.swo
 *~
-
+*.html
+*.txt
 
 *.lock
 

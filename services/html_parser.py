@@ -1,7 +1,9 @@
-from bs4 import BeautifulSoup
 import json
 import os
+import re
 from datetime import datetime
+
+from bs4 import BeautifulSoup
 
 
 class KBOHTMLParser:
@@ -9,6 +11,11 @@ class KBOHTMLParser:
     
     def __init__(self, html_content):
         self.soup = BeautifulSoup(html_content, 'html.parser')
+
+    @staticmethod
+    def _clean_whitespace(text: str) -> str:
+        """Compresse les espaces et retours à la ligne superflus."""
+        return re.sub(r'\s+', ' ', text).strip()
         
     def extract_data(self):
         """Extrait toutes les données principales du HTML."""
@@ -18,9 +25,9 @@ class KBOHTMLParser:
             'informations_juridiques': self._extract_legal_info(),
             'activite_detaillee': self._extract_detailed_activity(),
             'dirigeants': self._extract_directors(),
-            'hoedanigheden': self._extract_hoedanigheden(),
-            'activites_btw': self._extract_btw_activities(),
-            'activites_rsz': self._extract_rsz_activities()
+            'qualites': self._extract_qualites(),
+            'activites_tva': self._extract_activites_tva(),
+            'activites_onss': self._extract_activites_onss()
         }
         return data
     
@@ -29,54 +36,65 @@ class KBOHTMLParser:
         presentation = {}
         
         # Numéro d'entreprise
-        numero_elem = self.soup.find('td', string='Ondernemingsnummer:')
+        numero_elem = self.soup.find('td', string=lambda x: x and "Numéro d'entreprise" in x)
         if numero_elem:
-            presentation['numero_entreprise'] = numero_elem.find_next_sibling('td').text.strip()
+            numero_td = numero_elem.find_next_sibling('td')
+            raw_numero = numero_td.get_text(separator=' ', strip=True) if numero_td else ''
+            match = re.search(r'\d{4}\.\d{3}\.\d{3}', raw_numero)
+            if match:
+                presentation['numero_entreprise'] = match.group(0)
         
         # Dénomination
-        nom_elem = self.soup.find('td', string='Naam:')
+        nom_elem = self.soup.find('td', string=lambda x: x and 'Dénomination' in x)
         if nom_elem:
             nom_td = nom_elem.find_next_sibling('td')
             presentation['denomination'] = nom_td.contents[0].strip() if nom_td.contents else nom_td.text.strip()
         
         # Adresse principale
-        adresse_elem = self.soup.find('td', string='Adres van de zetel:')
+        adresse_elem = self.soup.find('td', string=lambda x: x and 'Adresse du siège' in x)
         if adresse_elem:
             adresse_td = adresse_elem.find_next_sibling('td')
             adresse_text = adresse_td.get_text(separator=' ', strip=True)
-            presentation['adresse_principale'] = adresse_text.split('Sinds')[0].strip()
+            adresse_text = self._clean_whitespace(adresse_text.split('Depuis')[0])
+            if adresse_text and adresse_text.isdigit() and len(adresse_text) < 5:
+                adresse_text = f"{adresse_text} (adresse BCE indisponible)"
+            presentation['adresse_principale'] = adresse_text
         
         # Status
-        status_elem = self.soup.find('td', string='Status:')
+        status_elem = self.soup.find('td', string=lambda x: x and 'Statut' in x)
         if status_elem:
             status_td = status_elem.find_next_sibling('td')
             presentation['status'] = status_td.get_text(strip=True)
         
         # Date de création
-        date_elem = self.soup.find('td', string='Begindatum:')
+        date_elem = self.soup.find('td', string=lambda x: x and 'Date de début' in x)
         if date_elem:
-            presentation['date_creation'] = date_elem.find_next_sibling('td').get_text(strip=True).split('\n')[0]
+            date_td = date_elem.find_next_sibling('td')
+            raw_date = date_td.get_text(separator=' ', strip=True) if date_td else ''
+            date_match = re.search(r'\d{1,2}\s\w+\s\d{4}', raw_date)
+            if date_match:
+                presentation['date_creation'] = date_match.group(0)
         
         # Contact - Téléphone
-        tel_elem = self.soup.find('td', string=lambda x: x and 'Telefoonnummer' in x)
+        tel_elem = self.soup.find('td', string=lambda x: x and 'Numéro de téléphone' in x)
         if tel_elem:
             tel_td = tel_elem.find_next_sibling('td')
             if tel_td:
                 tel_table = tel_td.find('table')
                 if tel_table:
-                    tel_text = tel_table.get_text(strip=True).split('Sinds')[0].strip()
-                    if tel_text and tel_text != 'Geen gegevens opgenomen in KBO.':
+                    tel_text = tel_table.get_text(strip=True).split('Depuis')[0].strip()
+                    if tel_text and tel_text != 'Pas de données reprises dans la BCE.':
                         presentation['telephone'] = tel_text
         
         # Contact - Fax
-        fax_elem = self.soup.find('td', string=lambda x: x and 'Faxnummer' in x)
+        fax_elem = self.soup.find('td', string=lambda x: x and 'Numéro de fax' in x)
         if fax_elem:
             fax_td = fax_elem.find_next_sibling('td')
             if fax_td:
                 fax_table = fax_td.find('table')
                 if fax_table:
-                    fax_text = fax_table.get_text(strip=True).split('Sinds')[0].strip()
-                    if fax_text and fax_text != 'Geen gegevens opgenomen in KBO.':
+                    fax_text = fax_table.get_text(strip=True).split('Depuis')[0].strip()
+                    if fax_text and fax_text != 'Pas de données reprises dans la BCE.':
                         presentation['fax'] = fax_text
         
         # Contact - Email
@@ -89,7 +107,7 @@ class KBOHTMLParser:
                     presentation['email'] = email_link.text.strip()
         
         # Contact - Web
-        web_elem = self.soup.find('td', string=lambda x: x and 'Webadres' in x)
+        web_elem = self.soup.find('td', string=lambda x: x and 'Adresse web' in x)
         if web_elem:
             web_td = web_elem.find_next_sibling('td')
             if web_td:
@@ -104,30 +122,33 @@ class KBOHTMLParser:
         legal_info = {}
         
         # Forme juridique
-        forme_elem = self.soup.find('td', string=lambda x: x and 'Rechtsvorm' in x)
+        forme_elem = self.soup.find('td', string=lambda x: x and 'Forme légale' in x)
         if forme_elem:
             forme_td = forme_elem.find_next_sibling('td')
             if forme_td:
                 # Prendre le premier élément texte
-                forme_text = forme_td.get_text(strip=True).split('Sinds')[0].strip()
+                forme_text = forme_td.get_text(strip=True).split('Depuis')[0].strip()
                 legal_info['forme_juridique'] = forme_text
         
         # Type d'entité
-        type_elem = self.soup.find('td', string=lambda x: x and 'Type entiteit' in x)
+        type_elem = self.soup.find('td', string=lambda x: x and "Type d'entité" in x)
         if type_elem:
             legal_info['type_entite'] = type_elem.find_next_sibling('td').text.strip()
         
         # Situation juridique
-        situation_elem = self.soup.find('td', string=lambda x: x and 'Rechtstoestand' in x)
+        situation_elem = self.soup.find('td', string=lambda x: x and 'Situation juridique' in x)
         if situation_elem:
             situation_td = situation_elem.find_next_sibling('td')
             legal_info['situation_juridique'] = situation_td.get_text(separator=' ', strip=True)
         
         # Numéro de TVA
-        numero_elem = self.soup.find('td', string='Ondernemingsnummer:')
+        numero_elem = self.soup.find('td', string=lambda x: x and "Numéro d'entreprise" in x)
         if numero_elem:
-            numero = numero_elem.find_next_sibling('td').text.strip()
-            legal_info['numero_tva'] = numero.replace('.', '')
+            numero_td = numero_elem.find_next_sibling('td')
+            raw_numero = numero_td.get_text(separator=' ', strip=True) if numero_td else ''
+            match = re.search(r'\d{10}', raw_numero.replace('.', ''))
+            if match:
+                legal_info['numero_tva'] = match.group(0)
         
         # Siège social (SIRET)
         siret_elem = self.soup.find('td', string=lambda x: x and 'SIRET' in str(x))
@@ -135,7 +156,7 @@ class KBOHTMLParser:
             legal_info['siret_siege'] = siret_elem.find_next_sibling('td').text.strip()
         
         # Nombre d'établissements
-        ve_elem = self.soup.find('td', string=lambda x: x and 'Aantal vestigingseenheden' in str(x))
+        ve_elem = self.soup.find('td', string=lambda x: x and "Nombre d'unités d'établissement" in str(x))
         if ve_elem:
             ve_td = ve_elem.find_next_sibling('td')
             if ve_td:
@@ -144,7 +165,7 @@ class KBOHTMLParser:
                     legal_info['nombre_etablissements'] = int(strong.text.strip())
         
         # Capital social
-        capital_elem = self.soup.find('td', string=lambda x: x and 'Capital social' in str(x))
+        capital_elem = self.soup.find('td', string=lambda x: x and 'Capital' in str(x))
         if capital_elem:
             legal_info['capital_social'] = capital_elem.find_next_sibling('td').text.strip()
         
@@ -154,18 +175,19 @@ class KBOHTMLParser:
         """Extrait l'activité détaillée."""
         activity = {}
         
-        # Activités BTW (TVA)
-        btw_activities = []
-        btw_section = self.soup.find('h2', string='Btw-activiteiten Nacebelcode versie 2025')
-        if btw_section:
-            btw_table = btw_section.find_parent('table')
-            btw_rows = btw_table.find_all('td', class_='QL')
-            for row in btw_rows:
-                text = row.get_text(strip=True)
-                if 'Btw' in text and 'Nacebelcode' not in text:
-                    btw_activities.append(text)
+        # Activités TVA (aperçu textuel)
+        tva_activities = []
+        tva_section = self.soup.find('h2', string=lambda x: x and 'Activités TVA' in x)
+        if tva_section:
+            tva_table = tva_section.find_parent('table')
+            if tva_table:
+                tva_rows = tva_table.find_all('td', class_=['QL', 'RL'])
+                for row in tva_rows:
+                    text = row.get_text(strip=True)
+                    if 'TVA' in text:
+                        tva_activities.append(text)
         
-        activity['activites_btw'] = btw_activities
+        activity['activites_tva'] = tva_activities
         
         return activity
     
@@ -183,106 +205,108 @@ class KBOHTMLParser:
                     director = {
                         'qualite': cells[0].get_text(strip=True),
                         'nom_prenom': cells[1].get_text(strip=True),
-                        'date_nomination': cells[2].get_text(strip=True).replace('Sinds ', '')
+                        'date_nomination': (cells[2].get_text(strip=True)
+                                            .replace('Depuis le ', '')
+                                            .replace('Depuis ', ''))
                     }
                     directors.append(director)
         
         return directors
     
-    def _extract_hoedanigheden(self):
-        """Extrait les hoedanigheden (qualités)."""
-        hoedanigheden = []
+    def _extract_qualites(self):
+        """Extrait les qualités mentionnées dans la fiche."""
+        qualites = []
         
-        # Chercher la section Hoedanigheden
-        hoedanigheden_header = self.soup.find('h2', string='Hoedanigheden')
-        if hoedanigheden_header:
-            table = hoedanigheden_header.find_parent('table')
-            # Trouver toutes les lignes après le header
-            current = hoedanigheden_header.find_parent('tr')
+        qualites_header = self.soup.find('h2', string='Qualités')
+        if qualites_header:
+            current = qualites_header.find_parent('tr')
             while current:
                 current = current.find_next_sibling('tr')
                 if not current:
                     break
                 td = current.find('td', class_=['QL', 'RL'])
-                if td:
-                    text = td.get_text(strip=True)
-                    # Ignorer les cellules vides et les sections suivantes
-                    if (text and 
-                        not text.startswith('&nbsp;') and 
-                        'Toelatingen' not in text and
-                        'Geen gegevens' not in text and
-                        'Btw' not in text and
-                        'RSZ' not in text and
-                        len(text) > 3):
-                        hoedanigheden.append(text)
-                    if 'Toelatingen' in text or 'Btw-activiteiten' in text:
+                if not td:
+                    header = current.find('h2')
+                    if header:
                         break
+                    continue
+                text = td.get_text(strip=True)
+                if text and text != 'Pas de données reprises dans la BCE.':
+                    qualites.append(text)
         
-        return hoedanigheden
+        return qualites
     
-    def _extract_btw_activities(self):
-        """Extrait les activités BTW avec codes NACE."""
+    def _extract_activites_tva(self):
+        """Extrait les activités TVA avec leurs codes NACE."""
         activities = []
         
-        btw_header = self.soup.find('h2', string=lambda x: x and 'Btw-activiteiten Nacebelcode versie 2025' in x)
-        if btw_header:
-            current = btw_header.find_parent('tr')
+        tva_header = self.soup.find('h2', string=lambda x: x and 'Activités TVA' in x)
+        if tva_header:
+            current = tva_header.find_parent('tr')
             while current:
                 current = current.find_next_sibling('tr')
                 if not current:
                     break
-                td = current.find('td', class_='QL')
-                if td:
-                    text = td.get_text(strip=True)
-                    if 'Btw' in text and 'Nacebelcode' not in text:
-                        # Extraire le code NACE et la description
-                        link = td.find('a')
-                        if link:
-                            href = link.get('href', '')
-                            code = href.split('nace.code=')[1].split('&')[0] if 'nace.code=' in href else ''
-                            description = link.text.strip()
-                            # Extraire la date
-                            date_match = text.split('Sinds')[-1].strip() if 'Sinds' in text else ''
-                            activities.append({
-                                'code_nace': code,
-                                'description': description,
-                                'date_debut': date_match
-                            })
-                    if 'RSZ' in text or 'Toon de activiteiten' in text:
+                td = current.find('td', class_=['QL', 'RL'])
+                if not td:
+                    header = current.find('h2')
+                    if header:
                         break
+                    continue
+                text = td.get_text(strip=True)
+                if 'TVA' not in text:
+                    continue
+                link = td.find('a')
+                code = ''
+                description = ''
+                if link:
+                    href = link.get('href', '')
+                    if 'nace.code=' in href:
+                        code = href.split('nace.code=')[1].split('&')[0]
+                    description = link.get_text(strip=True)
+                date_match = text.split('Depuis')[-1].strip() if 'Depuis' in text else ''
+                activities.append({
+                    'code_nace': code,
+                    'description': description,
+                    'date_debut': date_match
+                })
         
         return activities
     
-    def _extract_rsz_activities(self):
-        """Extrait les activités RSZ avec codes NACE."""
+    def _extract_activites_onss(self):
+        """Extrait les activités ONSS avec codes NACE."""
         activities = []
         
-        rsz_header = self.soup.find('h2', string=lambda x: x and 'RSZ-activiteiten Nacebelcode versie 2025' in x)
-        if rsz_header:
-            current = rsz_header.find_parent('tr')
+        onss_header = self.soup.find('h2', string=lambda x: x and 'Activités ONSS' in x)
+        if onss_header:
+            current = onss_header.find_parent('tr')
             while current:
                 current = current.find_next_sibling('tr')
                 if not current:
                     break
-                td = current.find('td', class_='QL')
-                if td:
-                    text = td.get_text(strip=True)
-                    if 'RSZ' in text and 'Nacebelcode' not in text:
-                        # Extraire le code NACE et la description
-                        link = td.find('a')
-                        if link:
-                            href = link.get('href', '')
-                            code = href.split('nace.code=')[1].split('&')[0] if 'nace.code=' in href else ''
-                            description = link.text.strip()
-                            # Extraire la date
-                            date_match = text.split('Sinds')[-1].strip() if 'Sinds' in text else ''
-                            activities.append({
-                                'code_nace': code,
-                                'description': description,
-                                'date_debut': date_match
-                            })
-                    if 'Toon de activiteiten' in text:
+                td = current.find('td', class_=['QL', 'RL'])
+                if not td:
+                    header = current.find('h2')
+                    if header:
                         break
+                    continue
+                text = td.get_text(strip=True)
+                if 'ONSS' not in text:
+                    continue
+                link = td.find('a')
+                code = ''
+                description = ''
+                if link:
+                    href = link.get('href', '')
+                    if 'nace.code=' in href:
+                        code = href.split('nace.code=')[1].split('&')[0]
+                    description = link.get_text(strip=True)
+                date_match = text.split('Depuis')[-1].strip() if 'Depuis' in text else ''
+                activities.append({
+                    'code_nace': code,
+                    'description': description,
+                    'date_debut': date_match
+                })
         
         return activities
 

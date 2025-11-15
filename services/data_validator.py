@@ -30,13 +30,13 @@ class DataValidator:
                 },
                 'status': {
                     'required': True,
-                    'format': r'^(Actief|Gestopt|Inactief)$',
-                    'description': 'Statut valide'
+                    'format': r'^(Actif|Dissous|Radié|En liquidation|Inactif|Suspendu|Clôturé)$',
+                    'description': 'Statut valide en français'
                 },
                 'date_creation': {
                     'required': False,
                     'format': r'^\d{1,2}\s\w+\s\d{4}$',  # Format: 26 oktober 1948
-                    'description': 'Date au format néerlandais'
+                    'description': 'Date au format français'
                 },
                 'telephone': {
                     'required': False,
@@ -57,8 +57,8 @@ class DataValidator:
                 },
                 'type_entite': {
                     'required': True,
-                    'format': r'^(Rechtspersoon|Natuurlijk persoon)$',
-                    'description': 'Type entité valide'
+                    'format': r'^(Personne morale|Personne physique)$',
+                    'description': 'Type d\'entité valide'
                 },
                 'numero_tva': {
                     'required': False,
@@ -167,6 +167,8 @@ class DataValidator:
         total_files = len(json_files)
         valid_count = 0
         error_types = {}
+        # Map each error type to a set of entreprise identifiers where it occurred
+        error_locations = {}
         
         for json_file in json_files:
             try:
@@ -179,17 +181,22 @@ class DataValidator:
                 if validation['valide']:
                     valid_count += 1
                 
-                # Compter les types d'erreurs
+                # Compter les types d'erreurs et enregistrer les entreprises affectées
+                ent_id = validation.get('entreprise', json_file)
                 for error in validation['erreurs']:
                     error_types[error] = error_types.get(error, 0) + 1
+                    error_locations.setdefault(error, set()).add(ent_id)
                 
             except Exception as e:
+                err_msg = f'erreur_lecture_fichier: {str(e)}'
                 results.append({
                     'entreprise': json_file,
                     'valide': False,
-                    'erreurs': [f'erreur_lecture_fichier: {str(e)}'],
+                    'erreurs': [err_msg],
                     'validation_date': datetime.now().isoformat()
                 })
+                error_types[err_msg] = error_types.get(err_msg, 0) + 1
+                error_locations.setdefault(err_msg, set()).add(json_file)
         
         # Calculer les statistiques
         invalid_count = total_files - valid_count
@@ -211,6 +218,7 @@ class DataValidator:
                 'pourcentage_champs_manquants': round(missing_fields_percentage, 2)
             },
             'repartition_erreurs': error_types,
+            'erreurs_localisation': {k: sorted(list(v)) for k, v in error_locations.items()},
             'champs_manquants': missing_fields,
             'erreurs_format': format_errors,
             'details_validations': results
@@ -239,6 +247,10 @@ def generate_validation_summary(report: Dict) -> str:
     
     for error_type, count in sorted(report['repartition_erreurs'].items(), key=lambda x: x[1], reverse=True):
         summary += f"  • {error_type}: {count}\n"
+        # Afficher les numéros d'entreprises concernés si disponibles
+        locs = report.get('erreurs_localisation', {}).get(error_type)
+        if locs:
+            summary += f"    → Entreprises: {', '.join(locs)}\n"
     
     summary += f"\n📅 Date de validation : {report['date_validation']}\n"
     
