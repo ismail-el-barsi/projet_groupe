@@ -11,7 +11,7 @@ import logging
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import insert, JSONB
 
 Base = declarative_base()
 
@@ -52,6 +52,26 @@ class DagStatus(Base):
     last_scrape = Column(DateTime)
     status = Column(String(20), default='running')
     current_position = Column(Integer, default=0)
+
+
+class Entreprise(Base):
+    __tablename__ = 'entreprises'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    numero_entreprise = Column(String(50), unique=True, index=True, nullable=False)
+    denomination = Column(String(255))
+    status = Column(String(50))
+    extraction_date = Column(DateTime, default=datetime.now)
+    last_update = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    # Données complètes en JSONB (PostgreSQL)
+    data = Column(JSONB, nullable=False)
+    
+    # Champs extraits pour faciliter les recherches
+    adresse = Column(Text)
+    forme_juridique = Column(String(100))
+    numero_tva = Column(String(50))
+    date_creation = Column(String(50))
 
 
 class DashboardCollector:
@@ -395,6 +415,124 @@ class DashboardCollector:
                 }
             
             return {"dags_status": dags_dict}
+        finally:
+            session.close()
+    
+    def insert_entreprise(self, data):
+        """Insère ou met à jour les données d'une entreprise dans la BDD."""
+        session = self.Session()
+        try:
+            # Extraire les champs clés
+            presentation = data.get('presentation', {})
+            infos_juridiques = data.get('informations_juridiques', {})
+            
+            numero_entreprise = presentation.get('numero_entreprise')
+            if not numero_entreprise:
+                raise ValueError("Numéro d'entreprise manquant dans les données")
+            
+            # Préparer les données pour l'insertion
+            entreprise_data = {
+                'numero_entreprise': numero_entreprise,
+                'denomination': presentation.get('denomination'),
+                'status': presentation.get('status'),
+                'extraction_date': datetime.now(),
+                'last_update': datetime.now(),
+                'data': data,  # Stockage complet en JSONB
+                'adresse': presentation.get('adresse_principale'),
+                'forme_juridique': infos_juridiques.get('forme_juridique'),
+                'numero_tva': infos_juridiques.get('numero_tva'),
+                'date_creation': presentation.get('date_creation')
+            }
+            
+            # Upsert : mise à jour si existe, insertion sinon
+            stmt = insert(Entreprise).values(**entreprise_data)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=['numero_entreprise'],
+                set_={
+                    'denomination': stmt.excluded.denomination,
+                    'status': stmt.excluded.status,
+                    'last_update': datetime.now(),
+                    'data': stmt.excluded.data,
+                    'adresse': stmt.excluded.adresse,
+                    'forme_juridique': stmt.excluded.forme_juridique,
+                    'numero_tva': stmt.excluded.numero_tva,
+                    'date_creation': stmt.excluded.date_creation
+                }
+            )
+            
+            session.execute(stmt)
+            session.commit()
+            
+            logger.info(f"✓ Entreprise {numero_entreprise} insérée/mise à jour dans la BDD")
+            return {'success': True, 'numero_entreprise': numero_entreprise}
+            
+        except Exception as e:
+            session.rollback()
+            logger.exception(f"Erreur insertion entreprise: {e}")
+            raise
+        finally:
+            session.close()
+    
+    def get_entreprise(self, numero_entreprise):
+        """Récupère les données complètes d'une entreprise."""
+        session = self.Session()
+        try:
+            entreprise = session.query(Entreprise).filter(
+                Entreprise.numero_entreprise == numero_entreprise
+            ).first()
+            
+            if not entreprise:
+                return None
+            
+            return {
+                'id': entreprise.id,
+                'numero_entreprise': entreprise.numero_entreprise,
+                'denomination': entreprise.denomination,
+                'status': entreprise.status,
+                'extraction_date': entreprise.extraction_date.isoformat() if entreprise.extraction_date else None,
+                'last_update': entreprise.last_update.isoformat() if entreprise.last_update else None,
+                'data': entreprise.data,  # Données complètes
+                'adresse': entreprise.adresse,
+                'forme_juridique': entreprise.forme_juridique,
+                'numero_tva': entreprise.numero_tva,
+                'date_creation': entreprise.date_creation
+            }
+        finally:
+            session.close()
+    
+    def search_entreprises(self, query, limit=50):
+        """Recherche des entreprises par numéro ou dénomination."""
+        session = self.Session()
+        try:
+            # Recherche par numéro exact ou par nom (ILIKE)
+            query_filter = session.query(Entreprise).filter(
+                (Entreprise.numero_entreprise.like(f'%{query}%')) |
+                (Entreprise.denomination.ilike(f'%{query}%'))
+            ).limit(limit)
+            
+            entreprises = query_filter.all()
+            
+            results = []
+            for e in entreprises:
+                results.append({
+                    'numero_entreprise': e.numero_entreprise,
+                    'denomination': e.denomination,
+                    'status': e.status,
+                    'adresse': e.adresse,
+                    'forme_juridique': e.forme_juridique,
+                    'last_update': e.last_update.isoformat() if e.last_update else None
+                })
+            
+            return results
+        finally:
+            session.close()
+    
+    def get_all_entreprises_count(self):
+        """Retourne le nombre total d'entreprises dans la BDD."""
+        session = self.Session()
+        try:
+            count = session.query(Entreprise).count()
+            return count
         finally:
             session.close()
     

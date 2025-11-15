@@ -10,37 +10,117 @@ import glob
 sys.path.insert(0, '/opt/airflow/services')
 
 from data_validator import DataValidator, generate_validation_summary
+from dashboard_collector import DashboardCollector
 
 
 # Chemins
-JSON_DIR = '/opt/airflow/data/extracted_data'
 REPORTS_DIR = '/opt/airflow/data/validation_reports'
+DATA_DIR = '/opt/airflow/data'
 
 
 def validate_data_quality(**context):
-    """Tâche principale de validation de la qualité des données."""
+    """Tâche principale de validation de la qualité des données depuis PostgreSQL."""
     # Créer le répertoire de rapports s'il n'existe pas
     os.makedirs(REPORTS_DIR, exist_ok=True)
     
-    # Lister tous les fichiers JSON (exclure les rapports)
-    json_pattern = os.path.join(JSON_DIR, '*.json')
-    json_files = [f for f in glob.glob(json_pattern) if 'report' not in f.lower()]
+    # Initialiser le collecteur pour accéder à la BDD
+    collector = DashboardCollector(DATA_DIR)
     
-    print(f"📁 Nombre de fichiers JSON à valider: {len(json_files)}")
-    
-    if len(json_files) == 0:
-        print("⚠️  Aucun fichier JSON trouvé à valider")
-        return {
-            'status': 'no_files',
-            'message': 'Aucun fichier à valider'
-        }
+    # Récupérer toutes les entreprises depuis la BDD
+    print("📊 Récupération des entreprises depuis PostgreSQL...")
+    session = collector.Session()
+    try:
+        from dashboard_collector import Entreprise
+        entreprises_db = session.query(Entreprise).all()
+        
+        print(f"📁 Nombre d'entreprises à valider: {len(entreprises_db)}")
+        
+        if len(entreprises_db) == 0:
+            print("⚠️  Aucune entreprise trouvée dans la BDD")
+            return {
+                'status': 'no_data',
+                'message': 'Aucune entreprise à valider'
+            }
+        
+        # Convertir les données JSONB en format compatible avec le validateur
+        # Le validateur attend des données au format du parser HTML
+        validation_data = []
+        for entreprise in entreprises_db:
+            # entreprise.data contient déjà le dict complet au format attendu
+            validation_data.append({
+                'numero_entreprise': entreprise.numero_entreprise,
+                'data': entreprise.data  # JSONB déjà parsé en dict Python
+            })
+        
+    finally:
+        session.close()
     
     # Initialiser le validateur
     validator = DataValidator()
     
-    # Valider tous les fichiers
+    # Valider toutes les entreprises
     print("🔍 Démarrage de la validation...")
-    report = validator.validate_all(json_files)
+    
+    # Adapter la validation pour les données en mémoire
+    results = []
+    total_files = len(validation_data)
+    valid_count = 0
+    error_types = {}
+    error_locations = {}
+    
+    for item in validation_data:
+        data = item['data']
+        numero = item['numero_entreprise']
+        
+        try:
+            validation = validator.validate_entity(data)
+            results.append(validation)
+            
+            if validation['valide']:
+                valid_count += 1
+            
+            # Compter les types d'erreurs et enregistrer les entreprises affectées
+            for error in validation['erreurs']:
+                error_types[error] = error_types.get(error, 0) + 1
+                error_locations.setdefault(error, set()).add(numero)
+                
+        except Exception as e:
+            err_msg = f'erreur_validation: {str(e)}'
+            results.append({
+                'entreprise': numero,
+                'valide': False,
+                'erreurs': [err_msg],
+                'validation_date': datetime.now().isoformat()
+            })
+            error_types[err_msg] = error_types.get(err_msg, 0) + 1
+            error_locations.setdefault(err_msg, set()).add(numero)
+    
+    # Calculer les statistiques
+    invalid_count = total_files - valid_count
+    valid_percentage = (valid_count / total_files * 100) if total_files > 0 else 0
+    
+    # Calculer les champs manquants
+    missing_fields = {k: v for k, v in error_types.items() if 'manquant' in k}
+    format_errors = {k: v for k, v in error_types.items() if 'format_invalide' in k or 'type_invalide' in k}
+    
+    missing_fields_percentage = sum(missing_fields.values()) / (total_files * len(validator.validation_rules['presentation'])) * 100 if total_files > 0 else 0
+    
+    report = {
+        'date_validation': datetime.now().isoformat(),
+        'source': 'PostgreSQL (table entreprises)',
+        'statistiques': {
+            'total_entreprises': total_files,
+            'entreprises_valides': valid_count,
+            'entreprises_invalides': invalid_count,
+            'pourcentage_valides': round(valid_percentage, 2),
+            'pourcentage_champs_manquants': round(missing_fields_percentage, 2)
+        },
+        'repartition_erreurs': error_types,
+        'erreurs_localisation': {k: sorted(list(v)) for k, v in error_locations.items()},
+        'champs_manquants': missing_fields,
+        'erreurs_format': format_errors,
+        'details_validations': results
+    }
     
     # Générer le résumé textuel
     summary = generate_validation_summary(report)
@@ -83,6 +163,7 @@ def generate_dashboard_data(**context):
     # Créer un fichier JSON pour le dashboard
     dashboard_data = {
         'last_update': datetime.now().isoformat(),
+        'source': 'PostgreSQL',
         'metrics': {
             'total_entreprises': stats['total_entreprises'],
             'taux_validite': stats['pourcentage_valides'],
@@ -97,6 +178,7 @@ def generate_dashboard_data(**context):
         json.dump(dashboard_data, f, ensure_ascii=False, indent=2)
     
     print(f"📊 Métriques dashboard sauvegardées: {dashboard_file}")
+    print(f"✓ Source: PostgreSQL (table entreprises)")
     print(f"✓ Taux de validité: {stats['pourcentage_valides']}%")
     print(f"✓ Taux d'erreurs: {100 - stats['pourcentage_valides']}%")
     

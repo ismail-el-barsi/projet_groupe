@@ -321,6 +321,72 @@ def parse_html_file(html_file_path):
 
 
 def save_to_json(data, output_path):
-    """Sauvegarde les données extraites en JSON."""
+    """
+    DEPRECATED: Sauvegarde les données extraites en JSON.
+    Utiliser save_to_db() à la place pour enregistrer directement en BDD.
+    """
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def save_to_db(data, data_dir='/opt/airflow'):
+    """
+    Sauvegarde les données extraites directement dans PostgreSQL.
+    Remplace save_to_json() pour éviter les fichiers intermédiaires.
+    
+    Args:
+        data: Dictionnaire des données extraites
+        data_dir: Répertoire de base pour DashboardCollector
+    
+    Returns:
+        dict: Résultat de l'insertion {'success': bool, 'numero_entreprise': str}
+    """
+    import sys
+    import logging
+    
+    # Importer le collector (ajuster le path si nécessaire)
+    collector_path = os.path.join(os.path.dirname(__file__))
+    if collector_path not in sys.path:
+        sys.path.insert(0, collector_path)
+    
+    from dashboard_collector import DashboardCollector
+    
+    logger = logging.getLogger(__name__)
+    
+    try:
+        collector = DashboardCollector(data_dir)
+        result = collector.insert_entreprise(data)
+        
+        numero = data.get('presentation', {}).get('numero_entreprise', 'N/A')
+        logger.info(f"✓ Données sauvegardées en BDD pour entreprise {numero}")
+        
+        return result
+        
+    except Exception as e:
+        logger.exception(f"Erreur sauvegarde BDD: {e}")
+        raise
+
+
+def parse_and_save_to_db(html_file_path, data_dir='/opt/airflow'):
+    """
+    Parse un fichier HTML et sauvegarde directement dans PostgreSQL.
+    Fonction tout-en-un pour remplacer parse + save_to_json.
+    
+    Args:
+        html_file_path: Chemin vers le fichier HTML
+        data_dir: Répertoire de base
+    
+    Returns:
+        dict: Résultat avec données extraites et statut insertion
+    """
+    # Parser le HTML
+    data = parse_html_file(html_file_path)
+    
+    # Sauvegarder en BDD
+    db_result = save_to_db(data, data_dir)
+    
+    return {
+        'data': data,
+        'db_result': db_result,
+        'file': html_file_path
+    }

@@ -9,7 +9,7 @@ from pathlib import Path
 # Ajouter le répertoire services au path
 sys.path.insert(0, '/opt/airflow/services')
 
-from html_parser import parse_html_file, save_to_json
+from html_parser import parse_html_file, save_to_db, parse_and_save_to_db
 
 
 # Chemins
@@ -18,10 +18,7 @@ OUTPUT_DIR = '/opt/airflow/data/extracted_data'
 
 
 def process_html_files(**context):
-    """Traite tous les fichiers HTML et extrait les données."""
-    # Créer le répertoire de sortie s'il n'existe pas
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    
+    """Traite tous les fichiers HTML et sauvegarde directement en BDD PostgreSQL."""
     processed_files = []
     errors = []
     
@@ -29,29 +26,29 @@ def process_html_files(**context):
     html_files = [f for f in os.listdir(HTML_DIR) if f.endswith('.html')]
     
     print(f"Nombre de fichiers HTML trouvés: {len(html_files)}")
+    print("Mode: Sauvegarde directe en PostgreSQL (pas de fichiers JSON)")
     
     for html_file in html_files:
         try:
             html_path = os.path.join(HTML_DIR, html_file)
             
-            # Extraire les données
+            # Parser et sauvegarder directement en BDD
             print(f"Traitement de {html_file}...")
-            data = parse_html_file(html_path)
+            result = parse_and_save_to_db(html_path, data_dir='/opt/airflow')
             
-            # Créer le nom du fichier de sortie
-            output_filename = html_file.replace('.html', '.json')
-            output_path = os.path.join(OUTPUT_DIR, output_filename)
+            data = result['data']
+            db_result = result['db_result']
             
-            # Sauvegarder en JSON
-            save_to_json(data, output_path)
-            
-            processed_files.append({
-                'file': html_file,
-                'output': output_filename,
-                'numero_entreprise': data.get('presentation', {}).get('numero_entreprise', 'N/A')
-            })
-            
-            print(f"✓ {html_file} traité avec succès")
+            if db_result.get('success'):
+                processed_files.append({
+                    'file': html_file,
+                    'numero_entreprise': data.get('presentation', {}).get('numero_entreprise', 'N/A'),
+                    'denomination': data.get('presentation', {}).get('denomination', 'N/A'),
+                    'saved_to_db': True
+                })
+                print(f"✓ {html_file} traité et sauvegardé en BDD")
+            else:
+                raise Exception(f"Échec sauvegarde BDD: {db_result.get('error', 'Unknown')}")
             
         except Exception as e:
             error_msg = f"Erreur lors du traitement de {html_file}: {str(e)}"
@@ -64,19 +61,22 @@ def process_html_files(**context):
         'processed': len(processed_files),
         'errors': len(errors),
         'processed_files': processed_files,
-        'error_details': errors
+        'error_details': errors,
+        'storage': 'PostgreSQL (kbo_dashboard)'
     }
     
-    # Sauvegarder le rapport
+    # Optionnel: sauvegarder aussi un rapport JSON pour suivi
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     report_path = os.path.join(OUTPUT_DIR, 'processing_report.json')
     with open(report_path, 'w', encoding='utf-8') as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
     
     print(f"\n{'='*50}")
-    print(f"RAPPORT DE TRAITEMENT")
+    print(f"RAPPORT DE TRAITEMENT (HTML → PostgreSQL)")
     print(f"{'='*50}")
     print(f"Total de fichiers: {report['total_files']}")
     print(f"Traités avec succès: {report['processed']}")
+    print(f"Sauvegardés en BDD: {report['processed']}")
     print(f"Erreurs: {report['errors']}")
     print(f"{'='*50}")
     
