@@ -26,6 +26,9 @@ standalone_admin_password.txt
 data/html_pages/*.html
 proxies_list.txt
 
+# JSON
+*.json
+
 # CSV
 *.csv
 data/*.csv
@@ -36,6 +39,9 @@ data/*.csv
 *.swp
 *.swo
 *~
+
+
+*.lock
 
 # OS
 .DS_Store
