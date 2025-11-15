@@ -39,6 +39,9 @@ data/*.csv
 *.swo
 *~
 
+
+*.lock
+
 # OS
 .DS_Store
 Thumbs.db
