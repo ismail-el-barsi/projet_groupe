@@ -5,10 +5,11 @@ Gestionnaire de proxies avec gestion des contraintes:
 - Cooldown de 5 minutes si échec
 """
 import logging
+import os
 import time
 from datetime import datetime, timedelta
+
 import redis
-import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
