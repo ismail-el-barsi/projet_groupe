@@ -346,31 +346,63 @@ class DashboardCollector:
         session = self.Session()
         try:
             now = datetime.now()
-            one_hour_ago = now - timedelta(hours=1)
-            
-            # Requêtes dernière heure
-            total_hour = session.query(ScrapingHistory).filter(
-                ScrapingHistory.timestamp > one_hour_ago
-            ).count()
-            
-            success_hour = session.query(ScrapingHistory).filter(
-                ScrapingHistory.timestamp > one_hour_ago,
-                ScrapingHistory.success == True
-            ).count()
-            
-            if total_hour > 0:
-                avg_requests_per_minute = total_hour / 60.0
-                success_rate = (success_hour / total_hour) * 100
+
+            # Try multiple windows to compute real data (no arbitrary fallback)
+            windows = [
+                (timedelta(hours=1), '1h'),
+                (timedelta(hours=24), '24h'),
+                (None, 'all')
+            ]
+
+            used_window = None
+            total_requests = 0
+            success_requests = 0
+            window_minutes = None
+
+            for win, label in windows:
+                if win is None:
+                    # all time
+                    total_requests = session.query(ScrapingHistory).count()
+                    success_requests = session.query(ScrapingHistory).filter(ScrapingHistory.success == True).count()
+                    used_window = 'all'
+                    window_minutes = max(1, (now - datetime(1970,1,1)).total_seconds() / 60.0)  # avoid div by zero
+                else:
+                    since = now - win
+                    total_requests = session.query(ScrapingHistory).filter(ScrapingHistory.timestamp > since).count()
+                    success_requests = session.query(ScrapingHistory).filter(
+                        ScrapingHistory.timestamp > since,
+                        ScrapingHistory.success == True
+                    ).count()
+                    if total_requests > 0:
+                        used_window = label
+                        window_minutes = win.total_seconds() / 60.0
+                        break
+
+            # If we didn't find a non-zero window and used_window == 'all' we still have totals
+            if used_window is None and total_requests > 0:
+                used_window = 'all'
+                # approximate window_minutes as total minutes since first record
+                first = session.query(ScrapingHistory).order_by(ScrapingHistory.timestamp.asc()).first()
+                if first and first.timestamp:
+                    window_minutes = max(1, (now - first.timestamp).total_seconds() / 60.0)
+                else:
+                    window_minutes = 60.0
+
+            # Compute metrics
+            if window_minutes and window_minutes > 0:
+                avg_requests_per_minute = float(total_requests) / float(window_minutes)
             else:
-                avg_requests_per_minute = 0
-                success_rate = 0
-            
+                avg_requests_per_minute = 0.0
+
+            success_rate = (float(success_requests) / float(total_requests) * 100.0) if total_requests > 0 else 0.0
+
             return {
                 "performance": {
                     "success_rate_per_minute": success_rate,
                     "avg_requests_per_minute": avg_requests_per_minute,
-                    "total_requests_last_hour": total_hour,
-                    "success_requests_last_hour": success_hour
+                    "total_requests_window": total_requests,
+                    "success_requests_window": success_requests,
+                    "window": used_window
                 }
             }
         finally:

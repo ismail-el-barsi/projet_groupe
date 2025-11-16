@@ -68,10 +68,16 @@ async function loadGeneralStats() {
         
         // Performance
         if (stats.performance) {
-            successRate.textContent = stats.performance.success_rate_per_minute.toFixed(2) + '%';
-            avgRequestsPerMin.textContent = stats.performance.avg_requests_per_minute.toFixed(2);
-            totalRequestsHour.textContent = formatNumber(stats.performance.total_requests_last_hour || 0);
-            successRequestsHour.textContent = formatNumber(stats.performance.success_requests_last_hour || 0);
+            const perf = stats.performance;
+            const successRateVal = (perf.success_rate_per_minute !== undefined) ? perf.success_rate_per_minute : 0;
+            const avgReqVal = (perf.avg_requests_per_minute !== undefined) ? perf.avg_requests_per_minute : 0;
+            const totalWindow = perf.total_requests_window !== undefined ? perf.total_requests_window : (perf.total_requests_last_hour !== undefined ? perf.total_requests_last_hour : 0);
+            const successWindow = perf.success_requests_window !== undefined ? perf.success_requests_window : (perf.success_requests_last_hour !== undefined ? perf.success_requests_last_hour : 0);
+
+            successRate.textContent = Number(successRateVal).toFixed(2) + '%';
+            avgRequestsPerMin.textContent = Number(avgReqVal).toFixed(2);
+            totalRequestsHour.textContent = formatNumber(totalWindow || 0);
+            successRequestsHour.textContent = formatNumber(successWindow || 0);
         }
         
         // Proxies
