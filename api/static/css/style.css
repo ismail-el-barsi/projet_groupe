@@ -595,6 +595,56 @@ body {
     border-left: 4px solid #ef4444;
 }
 
+/* Pagination controls */
+.pagination-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    justify-content: center;
+    margin-top: 1rem;
+}
+
+.pagination-controls .btn {
+    padding: 0.4rem 0.75rem;
+    border: 1px solid var(--border-color);
+    background-color: #ffffff;
+    color: var(--text-primary);
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.15s ease;
+}
+
+.pagination-controls .btn:hover {
+    background-color: var(--bg-color);
+    transform: translateY(-1px);
+}
+
+.pagination-controls .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.pagination-controls span {
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+/* Generic small button used in pagination */
+.btn {
+    padding: 0.4rem 0.75rem;
+    border-radius: 6px;
+    border: none;
+    background-color: var(--primary-color);
+    color: #fff;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.btn:hover {
+    background-color: var(--secondary-color);
+}
+
 /* Validation Report */
 .validation-report {
     padding: 1rem;

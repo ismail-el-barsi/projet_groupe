@@ -464,6 +464,33 @@ class DashboardCollector:
             return {"ips": ips_dict}
         finally:
             session.close()
+
+    def get_ips_stats_paginated(self, page=1, per_page=20):
+        """Récupère les statistiques des IPs avec pagination.
+
+        Retourne dict: total, page, per_page, items (list of {ip, stats})
+        """
+        session = self.Session()
+        try:
+            total = session.query(ProxyStats).count()
+            offset = max(0, (page - 1) * per_page)
+            proxies = session.query(ProxyStats).order_by(ProxyStats.proxy_ip).limit(per_page).offset(offset).all()
+
+            items = []
+            for proxy in proxies:
+                items.append({
+                    'proxy_ip': proxy.proxy_ip,
+                    'total_requests': proxy.total_requests,
+                    'successful_requests': proxy.successful_requests,
+                    'failed_requests': proxy.failed_requests,
+                    'status': proxy.status,
+                    'last_used': proxy.last_used.isoformat() if proxy.last_used else '',
+                    'last_success': proxy.last_success.isoformat() if proxy.last_success else ''
+                })
+
+            return {'total': total, 'page': page, 'per_page': per_page, 'items': items}
+        finally:
+            session.close()
     
     def get_dags_stats(self):
         """Récupère les statistiques des DAGs"""
@@ -592,6 +619,36 @@ class DashboardCollector:
             return results
         finally:
             session.close()
+
+    def search_entreprises_paginated(self, query, page=1, per_page=20):
+        """Recherche paginée des entreprises par numéro ou dénomination.
+
+        Retourne un dict avec `total`, `page`, `per_page` et `results`.
+        """
+        session = self.Session()
+        try:
+            base_q = session.query(Entreprise).filter(
+                (Entreprise.numero_entreprise.like(f'%{query}%')) |
+                (Entreprise.denomination.ilike(f'%{query}%'))
+            )
+            total = base_q.count()
+            offset = max(0, (page - 1) * per_page)
+            entreprises = base_q.order_by(Entreprise.last_update.desc()).limit(per_page).offset(offset).all()
+
+            results = []
+            for e in entreprises:
+                results.append({
+                    'numero_entreprise': e.numero_entreprise,
+                    'denomination': e.denomination,
+                    'status': e.status,
+                    'adresse': e.adresse,
+                    'forme_juridique': e.forme_juridique,
+                    'last_update': e.last_update.isoformat() if e.last_update else None
+                })
+
+            return {'total': total, 'page': page, 'per_page': per_page, 'results': results}
+        finally:
+            session.close()
     
     def list_all_entreprises(self, limit=100):
         """Liste toutes les entreprises (limitées)."""
@@ -613,6 +670,31 @@ class DashboardCollector:
                 })
             
             return results
+        finally:
+            session.close()
+
+    def list_all_entreprises_paginated(self, page=1, per_page=20):
+        """Liste paginée de toutes les entreprises ordonnées par `last_update`."""
+        session = self.Session()
+        try:
+            total = session.query(Entreprise).count()
+            offset = max(0, (page - 1) * per_page)
+            entreprises = session.query(Entreprise).order_by(
+                Entreprise.last_update.desc()
+            ).limit(per_page).offset(offset).all()
+
+            results = []
+            for e in entreprises:
+                results.append({
+                    'numero_entreprise': e.numero_entreprise,
+                    'denomination': e.denomination,
+                    'status': e.status,
+                    'adresse': e.adresse,
+                    'forme_juridique': e.forme_juridique,
+                    'last_update': e.last_update.isoformat() if e.last_update else None
+                })
+
+            return {'total': total, 'page': page, 'per_page': per_page, 'results': results}
         finally:
             session.close()
     

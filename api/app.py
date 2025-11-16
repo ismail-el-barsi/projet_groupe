@@ -88,25 +88,35 @@ def dashboard():
 def api_search():
     """API de recherche d'entreprises"""
     query = request.args.get('q', '').strip()
+    # pagination
+    try:
+        page = int(request.args.get('page', '1'))
+        per_page = int(request.args.get('per_page', '20'))
+    except ValueError:
+        page = 1
+        per_page = 20
     
     try:
-        # Si aucune query, retourner toutes les entreprises (limitées)
+        # Si aucune query, utiliser la liste paginée
         if not query:
-            results = collector.list_all_entreprises(limit=100)
+            page_data = collector.list_all_entreprises_paginated(page=page, per_page=per_page)
         else:
-            # Recherche dans la BDD PostgreSQL
-            results = collector.search_entreprises(query, limit=50)
-        
-        # Les données viennent de la BDD, donc déjà disponibles
-        for result in results:
-            result['is_scraped'] = True  # Si en BDD, c'est déjà scrapé et traité
+            # Recherche paginée dans la BDD PostgreSQL
+            page_data = collector.search_entreprises_paginated(query, page=page, per_page=per_page)
+
+        # Marquer les résultats comme scrapés et préparer le retour
+        for result in page_data['results']:
+            result['is_scraped'] = True
             result['status_display'] = result.get('status', 'Inconnu')
-        
+
         return jsonify({
             'success': True,
             'query': query,
-            'count': len(results),
-            'results': results
+            'total': page_data.get('total', 0),
+            'page': page_data.get('page', page),
+            'per_page': page_data.get('per_page', per_page),
+            'count': len(page_data.get('results', [])),
+            'results': page_data.get('results', [])
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -193,10 +203,21 @@ def api_validation_report():
 def api_proxies_stats():
     """API pour les statistiques des proxies"""
     try:
-        stats = collector.get_ips_stats()
+        # pagination support
+        try:
+            page = int(request.args.get('page', '1'))
+            per_page = int(request.args.get('per_page', '20'))
+        except ValueError:
+            page = 1
+            per_page = 20
+
+        page_data = collector.get_ips_stats_paginated(page=page, per_page=per_page)
         return jsonify({
             'success': True,
-            'data': stats
+            'total': page_data.get('total', 0),
+            'page': page_data.get('page', page),
+            'per_page': page_data.get('per_page', per_page),
+            'items': page_data.get('items', [])
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500

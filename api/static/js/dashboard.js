@@ -16,6 +16,7 @@ const successRequestsHour = document.getElementById('successRequestsHour');
 
 // Tables
 const proxiesTableBody = document.getElementById('proxiesTableBody');
+const proxiesPagination = document.getElementById('proxiesPagination');
 const dagsTableBody = document.getElementById('dagsTableBody');
 const failuresTableBody = document.getElementById('failuresTableBody');
 const failuresByType = document.getElementById('failuresByType');
@@ -80,10 +81,8 @@ async function loadGeneralStats() {
             successRequestsHour.textContent = formatNumber(successWindow || 0);
         }
         
-        // Proxies
-        if (stats.ips) {
-            displayProxies(stats.ips);
-        }
+        // Proxies (paginated table)
+        await loadProxiesPage(1, 10);
         
         // DAGs
         if (stats.dags_status) {
@@ -122,6 +121,61 @@ function displayProxies(ips) {
             </tr>
         `;
     }).join('');
+}
+
+// Display paginated proxies result (items array)
+function displayProxiesPaginated(items) {
+    if (!items || items.length === 0) {
+        proxiesTableBody.innerHTML = '<tr><td colspan="6" class="text-center">Aucun proxy enregistré</td></tr>';
+        return;
+    }
+
+    proxiesTableBody.innerHTML = items.map(stats => {
+        const statusClass = stats.status || 'actif';
+        return `
+            <tr>
+                <td>${stats.proxy_ip}</td>
+                <td>${formatNumber(stats.total_requests || 0)}</td>
+                <td>${formatNumber(stats.successful_requests || 0)}</td>
+                <td>${formatNumber(stats.failed_requests || 0)}</td>
+                <td><span class="proxy-status ${statusClass}">${statusClass}</span></td>
+                <td>${stats.last_used ? formatDate(stats.last_used) : 'N/A'}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+// Load a proxies page from the API and render with pagination controls
+async function loadProxiesPage(page = 1, per_page = 10) {
+    try {
+        const resp = await fetch(`/api/dashboard/proxies?page=${page}&per_page=${per_page}`);
+        const data = await resp.json();
+        if (!data.success) {
+            proxiesTableBody.innerHTML = '<tr><td colspan="6" class="text-center">Erreur chargement proxies</td></tr>';
+            return;
+        }
+
+        displayProxiesPaginated(data.items || []);
+        renderProxiesPagination(data.total || 0, data.page || page, data.per_page || per_page);
+    } catch (err) {
+        console.error('Erreur loadProxiesPage:', err);
+        proxiesTableBody.innerHTML = '<tr><td colspan="6" class="text-center">Erreur chargement proxies</td></tr>';
+    }
+}
+
+function renderProxiesPagination(total, page, per_page) {
+    if (!proxiesPagination) return;
+    const totalPages = Math.max(1, Math.ceil((total || 0) / (per_page || 1)));
+    let html = '';
+    if (page > 1) html += `<button id="proxiesPrev" class="btn">← Précédent</button>`;
+    html += ` <span>Page ${page} / ${totalPages}</span> `;
+    if (page < totalPages) html += `<button id="proxiesNext" class="btn">Suivant →</button>`;
+    proxiesPagination.innerHTML = html;
+
+    const prev = document.getElementById('proxiesPrev');
+    const next = document.getElementById('proxiesNext');
+    if (prev) prev.addEventListener('click', () => loadProxiesPage(page - 1, per_page));
+    if (next) next.addEventListener('click', () => loadProxiesPage(page + 1, per_page));
 }
 
 // Afficher les DAGs
