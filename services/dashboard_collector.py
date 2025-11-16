@@ -108,6 +108,22 @@ class DashboardMetric(Base):
     metrics = Column(JSONB)
 
 
+class ScrapingQueue(Base):
+    """File d'attente pour le scraping avec gestion de priorités"""
+    __tablename__ = 'scraping_queue'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    enterprise_number = Column(String(50), unique=True, index=True, nullable=False)
+    priority = Column(Integer, default=1, index=True)  # 1=normal, 2=haute, 3=très haute
+    status = Column(String(20), default='pending', index=True)  # pending, processing, completed, failed
+    added_at = Column(DateTime, default=datetime.now, index=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    attempts = Column(Integer, default=0)
+    last_error = Column(Text, nullable=True)
+    requested_by = Column(String(50), default='system')  # system, user, manual
+    
+
 class DashboardCollector:
     def __init__(self, data_dir):
         self.data_dir = data_dir
@@ -795,6 +811,244 @@ class DashboardCollector:
             **ips,
             **dags
         }
+    
+    # === Gestion de la file d'attente avec priorités ===
+    
+    def add_to_queue(self, enterprise_number, priority=1, requested_by='system'):
+        """Ajoute une entreprise à la file d'attente.
+        
+        Args:
+            enterprise_number: Numéro d'entreprise
+            priority: 1=normal, 2=haute (recherche manuelle), 3=très haute
+            requested_by: 'system', 'user', 'manual'
+        
+        Returns:
+            dict: Résultat de l'ajout
+        """
+        session = self.Session()
+        try:
+            # Vérifier si l'entreprise est déjà en queue
+            existing = session.query(ScrapingQueue).filter(
+                ScrapingQueue.enterprise_number == enterprise_number
+            ).first()
+            
+            if existing:
+                # Si existe et que la nouvelle priorité est plus haute, mettre à jour
+                if priority > existing.priority:
+                    existing.priority = priority
+                    existing.requested_by = requested_by
+                    existing.added_at = datetime.now()
+                    session.commit()
+                    logger.info(f"Priorité augmentée pour {enterprise_number}: {priority}")
+                    return {'success': True, 'action': 'priority_updated', 'enterprise_number': enterprise_number}
+                else:
+                    return {'success': True, 'action': 'already_queued', 'enterprise_number': enterprise_number}
+            
+            # Vérifier si déjà scrapé (existe dans la table entreprises)
+            entreprise_exists = session.query(Entreprise).filter(
+                Entreprise.numero_entreprise == enterprise_number
+            ).first()
+            
+            if entreprise_exists:
+                return {'success': True, 'action': 'already_scraped', 'enterprise_number': enterprise_number}
+            
+            # Ajouter à la queue
+            queue_item = ScrapingQueue(
+                enterprise_number=enterprise_number,
+                priority=priority,
+                status='pending',
+                requested_by=requested_by
+            )
+            session.add(queue_item)
+            session.commit()
+            
+            logger.info(f"Ajouté à la queue: {enterprise_number} (priorité: {priority})")
+            return {'success': True, 'action': 'added', 'enterprise_number': enterprise_number}
+            
+        except Exception as e:
+            session.rollback()
+            logger.exception(f"Erreur ajout à la queue: {e}")
+            return {'success': False, 'error': str(e)}
+        finally:
+            session.close()
+    
+    def get_queue_stats(self):
+        """Récupère les statistiques de la file d'attente."""
+        session = self.Session()
+        try:
+            total_pending = session.query(ScrapingQueue).filter(
+                ScrapingQueue.status == 'pending'
+            ).count()
+            
+            total_processing = session.query(ScrapingQueue).filter(
+                ScrapingQueue.status == 'processing'
+            ).count()
+            
+            total_completed = session.query(ScrapingQueue).filter(
+                ScrapingQueue.status == 'completed'
+            ).count()
+            
+            total_failed = session.query(ScrapingQueue).filter(
+                ScrapingQueue.status == 'failed'
+            ).count()
+            
+            high_priority = session.query(ScrapingQueue).filter(
+                ScrapingQueue.status == 'pending',
+                ScrapingQueue.priority >= 2
+            ).count()
+            
+            return {
+                'total_pending': total_pending,
+                'total_processing': total_processing,
+                'total_completed': total_completed,
+                'total_failed': total_failed,
+                'high_priority': high_priority,
+                'total_queue': total_pending + total_processing
+            }
+        finally:
+            session.close()
+    
+    def get_queue_items(self, status='pending', limit=100, page=1, per_page=20):
+        """Récupère les éléments de la file d'attente.
+        
+        Args:
+            status: Filtre par statut (pending, processing, completed, failed)
+            limit: Limite de résultats (deprecated, use pagination)
+            page: Numéro de page
+            per_page: Éléments par page
+        
+        Returns:
+            dict: {total, page, per_page, items}
+        """
+        session = self.Session()
+        try:
+            query = session.query(ScrapingQueue)
+            
+            if status:
+                query = query.filter(ScrapingQueue.status == status)
+            
+            # Trier par priorité décroissante, puis par date d'ajout
+            query = query.order_by(
+                ScrapingQueue.priority.desc(),
+                ScrapingQueue.added_at.asc()
+            )
+            
+            total = query.count()
+            offset = max(0, (page - 1) * per_page)
+            items = query.limit(per_page).offset(offset).all()
+            
+            results = []
+            for item in items:
+                results.append({
+                    'id': item.id,
+                    'enterprise_number': item.enterprise_number,
+                    'priority': item.priority,
+                    'priority_label': self._get_priority_label(item.priority),
+                    'status': item.status,
+                    'added_at': item.added_at.isoformat() if item.added_at else None,
+                    'started_at': item.started_at.isoformat() if item.started_at else None,
+                    'completed_at': item.completed_at.isoformat() if item.completed_at else None,
+                    'attempts': item.attempts,
+                    'last_error': item.last_error,
+                    'requested_by': item.requested_by
+                })
+            
+            return {
+                'total': total,
+                'page': page,
+                'per_page': per_page,
+                'items': results
+            }
+        finally:
+            session.close()
+    
+    def _get_priority_label(self, priority):
+        """Retourne le label de priorité."""
+        if priority >= 3:
+            return 'Très haute'
+        elif priority == 2:
+            return 'Haute'
+        else:
+            return 'Normale'
+    
+    def update_queue_item_status(self, enterprise_number, status, error=None):
+        """Met à jour le statut d'un élément de la queue."""
+        session = self.Session()
+        try:
+            item = session.query(ScrapingQueue).filter(
+                ScrapingQueue.enterprise_number == enterprise_number
+            ).first()
+            
+            if not item:
+                return {'success': False, 'error': 'not_found'}
+            
+            item.status = status
+            
+            if status == 'processing':
+                item.started_at = datetime.now()
+                item.attempts += 1
+            elif status == 'completed':
+                item.completed_at = datetime.now()
+            elif status == 'failed':
+                item.completed_at = datetime.now()
+                item.last_error = error
+            
+            session.commit()
+            return {'success': True, 'enterprise_number': enterprise_number}
+            
+        except Exception as e:
+            session.rollback()
+            logger.exception(f"Erreur mise à jour queue: {e}")
+            return {'success': False, 'error': str(e)}
+        finally:
+            session.close()
+    
+    def remove_from_queue(self, enterprise_number):
+        """Supprime une entreprise de la file d'attente."""
+        session = self.Session()
+        try:
+            item = session.query(ScrapingQueue).filter(
+                ScrapingQueue.enterprise_number == enterprise_number
+            ).first()
+            
+            if not item:
+                return {'success': False, 'error': 'not_found'}
+            
+            session.delete(item)
+            session.commit()
+            
+            logger.info(f"Supprimé de la queue: {enterprise_number}")
+            return {'success': True, 'enterprise_number': enterprise_number}
+            
+        except Exception as e:
+            session.rollback()
+            logger.exception(f"Erreur suppression queue: {e}")
+            return {'success': False, 'error': str(e)}
+        finally:
+            session.close()
+    
+    def get_next_to_scrape(self, limit=1):
+        """Récupère les prochaines entreprises à scraper (priorité décroissante)."""
+        session = self.Session()
+        try:
+            items = session.query(ScrapingQueue).filter(
+                ScrapingQueue.status == 'pending'
+            ).order_by(
+                ScrapingQueue.priority.desc(),
+                ScrapingQueue.added_at.asc()
+            ).limit(limit).all()
+            
+            results = []
+            for item in items:
+                results.append({
+                    'enterprise_number': item.enterprise_number,
+                    'priority': item.priority,
+                    'added_at': item.added_at.isoformat() if item.added_at else None
+                })
+            
+            return results
+        finally:
+            session.close()
 
 
 def update_dashboard_stats(data_dir=None):

@@ -25,6 +25,7 @@ from dashboard_collector import DashboardCollector
 from fetch_proxies import fetch_all_proxies
 from kbo_scraper import KBOScraper
 from proxy_manager import ProxyManager
+from queue_manager import QueueManager
 
 # Configuration
 NUM_DAGS = 20   # 20 DAGs seulement
@@ -176,68 +177,54 @@ def set_dag_progress(dag_id, index):
 
 def get_next_enterprise_for_dag(dag_id):
     """
-    NOUVELLE METHODE : Utilise une file d'attente centralisée
-    Tous les DAGs piochent dans la même queue
+    NOUVELLE METHODE avec Redis Queue : Utilise une file d'attente centralisée avec priorités
+    Tous les DAGs piochent dans la même queue Redis
     """
-    queue_file = os.path.join(parent_dir, "data/enterprise_queue.json")
+    queue_manager = QueueManager()
     
-    # Créer la queue si elle n'existe pas
-    if not os.path.exists(queue_file):
+    # Récupérer la prochaine entreprise depuis Redis (avec priorité)
+    # Passer le dag_id pour traçabilité
+    next_enterprises = queue_manager.get_next_to_scrape(count=1, dag_id=dag_id)
+    
+    if not next_enterprises:
+        # Si queue Redis vide, charger depuis CSV
         all_enterprises = load_all_enterprises()
-        queue_data = {
-            'current_index': 0,
-            'total': len(all_enterprises)
-        }
-        os.makedirs(os.path.dirname(queue_file), exist_ok=True)
-        with open(queue_file, 'w') as f:
-            json.dump(queue_data, f, indent=2)
-    
-    all_enterprises = load_all_enterprises()
-    
-    # Boucle pour trouver la prochaine entreprise valide
-    max_attempts = 100
-    for attempt in range(max_attempts):
-        # Lire et incrémenter l'index de manière atomique
-        try:
-            with open(queue_file, 'r') as f:
-                queue_data = json.load(f)
-        except:
-            queue_data = {'current_index': 0, 'total': len(all_enterprises)}
-        
-        current_index = queue_data.get('current_index', 0)
-        
-        # Vérifier si terminé
-        if current_index >= len(all_enterprises):
-            print(f"✅ {dag_id}: File d'attente terminée")
+        if not all_enterprises:
+            print(f"❌ {dag_id}: Aucune entreprise disponible")
             return None
         
-        enterprise = all_enterprises[current_index]
+        # Ajouter toutes les entreprises non scrapées à la queue Redis
+        added_count = 0
+        for enterprise in all_enterprises:
+            if not is_already_scraped(enterprise):
+                result = queue_manager.add_to_queue(
+                    enterprise_number=enterprise,
+                    priority=1,  # Priorité normale
+                    requested_by='system'
+                )
+                if result['success'] and result['action'] == 'added':
+                    added_count += 1
         
-        # Incrémenter immédiatement pour que les autres DAGs prennent la suivante
-        queue_data['current_index'] = current_index + 1
-        with open(queue_file, 'w') as f:
-            json.dump(queue_data, f, indent=2)
+        print(f"📋 {dag_id}: {added_count} entreprises ajoutées à la queue Redis")
         
-        # Vérifier validité
-        if is_already_scraped(enterprise):
-            continue
+        # Réessayer de récupérer
+        next_enterprises = queue_manager.get_next_to_scrape(count=1, dag_id=dag_id)
         
-        if is_being_scraped(enterprise):
-            continue
-        
-        failed_count = get_failed_count(enterprise)
-        if failed_count >= 3:
-            continue
-        
-        print(f"📋 {dag_id}: Entreprise {enterprise} (queue index {current_index}/{len(all_enterprises)}, échecs: {failed_count})")
-        
-        # Sauvegarder la position de ce DAG pour le dashboard
-        set_dag_progress(dag_id, current_index)
-        
-        return (enterprise, current_index)
+        if not next_enterprises:
+            print(f"✅ {dag_id}: File d'attente terminée")
+            return None
     
-    print(f"⚠️ {dag_id}: Aucune entreprise valide après {max_attempts} tentatives")
-    return None
+    enterprise_number = next_enterprises[0]
+    
+    # Vérifier validité (au cas où)
+    if is_already_scraped(enterprise_number):
+        queue_manager.mark_as_completed(enterprise_number)
+        # Réessayer avec la suivante
+        return get_next_enterprise_for_dag(dag_id)
+    
+    print(f"📋 {dag_id}: Entreprise {enterprise_number} (depuis Redis)")
+    
+    return (enterprise_number, 0)  # index 0 car géré par Redis
 
 
 
@@ -298,6 +285,7 @@ def scrape_single_enterprise_task(dag_id):
     
     # Initialiser le collecteur de stats
     dashboard = DashboardCollector(os.path.join(parent_dir, "data"))
+    queue_manager = QueueManager()  # Pour marquer completed/failed
     
     # Timer pour mesurer la durée
     start_time = datetime.now()
@@ -329,15 +317,15 @@ def scrape_single_enterprise_task(dag_id):
             duration=duration
         )
         
+        # Marquer comme complété dans Redis
+        queue_manager.mark_as_completed(enterprise_number)
+        
         # Mise à jour temps réel du dashboard
         dashboard.update_general_stats()
     else:
-        # Marquer comme échouée
-        fail_count = mark_enterprise_failed(enterprise_number)
-        
         # 📊 Enregistrer l'échec dans les stats avec vraie catégorie
         error_type = error_info['type'] if error_info else 'other'
-        error_msg = error_info['message'] if error_info else f'Échec #{fail_count}'
+        error_msg = error_info['message'] if error_info else 'Échec scraping'
         
         dashboard.record_scraping_failure(
             enterprise_id=enterprise_number,
@@ -347,15 +335,17 @@ def scrape_single_enterprise_task(dag_id):
             error_msg=error_msg
         )
         
+        # Marquer comme échoué dans Redis (retry automatique si < 3 tentatives)
+        queue_manager.mark_as_failed(
+            enterprise_number=enterprise_number,
+            error_type=error_type,
+            error_msg=error_msg
+        )
+        
         # Mise à jour temps réel du dashboard
         dashboard.update_general_stats()
         
-        if fail_count >= 3:
-            # Après 3 échecs, on abandonne (la queue a déjà avancé)
-            print(f"❌ {dag_id}: {enterprise_number} échec #{fail_count} - ABANDONNÉ")
-        else:
-            # Moins de 3 échecs, retry à la prochaine exécution
-            print(f"❌ {dag_id}: {enterprise_number} échec #{fail_count}/3 - retry")
+        print(f"❌ {dag_id}: {enterprise_number} échec - {error_type}")
     
     # Résultat
     print(f"{'='*60}\n")
@@ -414,46 +404,51 @@ globals()['kbo_fetch_proxies'] = dag_proxies
 for dag_num in range(1, NUM_DAGS + 1):
     dag_id = f"kbo_scraping_dag_{dag_num}"
     
-    with DAG(
-        dag_id,
-        default_args=default_args,
-        description=f'DAG {dag_num} - Scrape 1 entreprise et se relance',
-        schedule=None,  # Pas de schedule automatique, se déclenche lui-même
-        start_date=datetime(2025, 1, 1),
-        catchup=False,
-        tags=['kbo', 'scraping', 'auto', f'dag_{dag_num}'],
-        max_active_runs=1,
-    ) as dag:
-        
-        # Tâche : Scraper 1 entreprise
-        task_scrape = PythonOperator(
-            task_id='scrape_enterprise',
-            python_callable=scrape_single_enterprise_task,
-            op_kwargs={
-                'dag_id': dag_id
-            },
-        )
-        
-        # Tâche : Relancer ce même DAG pour la prochaine entreprise
-        task_trigger_next = TriggerDagRunOperator(
-            task_id='trigger_next_run',
-            trigger_dag_id=dag_id,  # Se déclenche lui-même
-            wait_for_completion=False,
-            reset_dag_run=False,
-        )
-        
-        # Ordre d'exécution : scrape puis relance
-        task_scrape >> task_trigger_next
-        
-        # Enregistrer le DAG
-        globals()[dag_id] = dag
+    # Utiliser une fonction pour créer chaque DAG avec son propre scope
+    def create_dag(dag_number, dag_identifier):
+        with DAG(
+            dag_identifier,
+            default_args=default_args,
+            description=f'DAG {dag_number} - Scrape 1 entreprise et se relance',
+            schedule=None,  # Pas de schedule automatique, se déclenche lui-même
+            start_date=datetime(2025, 1, 1),
+            catchup=False,
+            tags=['kbo', 'scraping', 'auto', f'dag_{dag_number}'],
+            max_active_runs=1,
+        ) as dag:
+            
+            # Tâche : Scraper 1 entreprise
+            task_scrape = PythonOperator(
+                task_id='scrape_enterprise',
+                python_callable=scrape_single_enterprise_task,
+                op_kwargs={
+                    'dag_id': dag_identifier
+                },
+            )
+            
+            # Tâche : Relancer ce même DAG pour la prochaine entreprise
+            task_trigger_next = TriggerDagRunOperator(
+                task_id='trigger_next_run',
+                trigger_dag_id=dag_identifier,  # Se déclenche lui-même
+                wait_for_completion=False,
+                reset_dag_run=False,
+            )
+            
+            # Ordre d'exécution : scrape puis relance
+            task_scrape >> task_trigger_next
+            
+            return dag
+    
+    # Créer et enregistrer le DAG
+    dag_instance = create_dag(dag_num, dag_id)
+    globals()[dag_id] = dag_instance
 
 print(f"\n✅ 1 DAG de setup + {NUM_DAGS} DAGs de scraping créés")
 print(f"")
 print(f"📋 Pour démarrer :")
 print(f"   1. Exécuter 'kbo_fetch_proxies' une fois (manuel)")
-print(f"   2. Activer les 10 DAGs de scraping")
-print(f"   3. Cliquer 'Trigger' une fois sur chaque DAG (1 à 10)")
+print(f"   2. Activer les {NUM_DAGS} DAGs de scraping")
+print(f"   3. Cliquer 'Trigger' une fois sur chaque DAG (1 à {NUM_DAGS})")
 print(f"   4. Les DAGs se relanceront automatiquement après chaque entreprise")
 print(f"")
 print(f"🔄 Mode : Auto-relance continue")

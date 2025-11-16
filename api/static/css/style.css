@@ -701,6 +701,186 @@ body {
     color: var(--danger-color);
 }
 
+/* File d'attente */
+.queue-filters {
+    display: flex;
+    align-items: center;
+}
+
+.filter-select {
+    padding: 0.5rem 1rem;
+    border: 2px solid var(--border-color);
+    border-radius: 6px;
+    background-color: white;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.filter-select:hover {
+    border-color: var(--primary-color);
+}
+
+.filter-select:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.queue-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.queue-stat {
+    background-color: var(--bg-color);
+    padding: 1rem;
+    border-radius: 6px;
+    text-align: center;
+}
+
+.queue-stat-value {
+    display: block;
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--primary-color);
+    margin-bottom: 0.25rem;
+}
+
+.queue-stat-label {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.priority-badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.priority-badge.high-priority {
+    background-color: #ff9800;
+    color: white;
+}
+
+.priority-badge.normal-priority {
+    background-color: #e5e7eb;
+    color: #374151;
+}
+
+/* Row highlighting for high priority */
+.high-priority-row {
+    background-color: #fff3e0 !important;
+    border-left: 3px solid #ff9800;
+}
+
+.high-priority-row:hover {
+    background-color: #ffe0b2 !important;
+}
+
+/* DAG badge */
+.dag-badge {
+    display: inline-block;
+    padding: 0.25rem 0.5rem;
+    background-color: #2196F3;
+    color: white;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    font-family: monospace;
+}
+
+/* DAG Assignments Grid */
+.dag-assignments-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.dag-assignment-card {
+    background-color: var(--bg-color);
+    padding: 1rem;
+    border-radius: 8px;
+    border-left: 4px solid #2196F3;
+}
+
+.dag-assignment-card h4 {
+    font-size: 1rem;
+    color: #2196F3;
+    margin-bottom: 0.75rem;
+    font-family: monospace;
+}
+
+.dag-assignment-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.dag-assignment-list li {
+    padding: 0.4rem;
+    background-color: white;
+    border-radius: 4px;
+    margin-bottom: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    font-family: monospace;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.dag-assignment-list li::before {
+    content: "→";
+    color: #2196F3;
+    font-weight: bold;
+}
+
+.dag-assignment-empty {
+    color: var(--text-secondary);
+    font-style: italic;
+    text-align: center;
+    padding: 2rem;
+}
+
+.status-badge.pending {
+    background-color: #dbeafe;
+    color: #1e40af;
+}
+
+.status-badge.processing {
+    background-color: #fef3c7;
+    color: #92400e;
+}
+
+.status-badge.failed {
+    background-color: #fee2e2;
+    color: #991b1b;
+}
+
+.btn-small {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+    border: none;
+    border-radius: 4px;
+    background-color: var(--danger-color);
+    color: white;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.btn-small:hover {
+    background-color: #dc2626;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .navbar .container {

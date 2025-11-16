@@ -8,6 +8,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit
 
 # Charger les variables d'environnement depuis .env
 load_dotenv()
@@ -16,18 +17,25 @@ load_dotenv()
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'services'))
 
 from dashboard_collector import DashboardCollector
+from queue_manager import QueueManager
+from redis_broadcaster import RedisBroadcaster
 
 from config import Config
 
 app = Flask(__name__)
 app.config.from_object(Config)
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
 CORS(app)
+
+# Initialiser SocketIO
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Configuration
 DATA_DIR = app.config['DATA_DIR']
 
 print(f"📊 Configuration Flask:")
 print(f"   - DATA_DIR: {DATA_DIR}")
+print(f"   - WebSocket: Activé")
 
 # Remplacer postgres_kbo par localhost dans l'environnement Docker
 # pour que Flask puisse se connecter depuis l'hôte
@@ -64,6 +72,11 @@ def patched_init(self, data_dir):
 dc_module.DashboardCollector.__init__ = patched_init
 
 collector = DashboardCollector(DATA_DIR)
+queue_manager = QueueManager()  # Gestionnaire de queue Redis
+
+# Initialiser le broadcaster Redis -> WebSocket
+broadcaster = RedisBroadcaster(queue_manager, socketio)
+broadcaster.start()  # Démarre la surveillance en arrière-plan
 
 
 @app.route('/')
@@ -103,10 +116,66 @@ def api_search():
         else:
             # Recherche paginée dans la BDD PostgreSQL
             page_data = collector.search_entreprises_paginated(query, page=page, per_page=per_page)
+            
+            # Si aucun résultat et que la query ressemble à un numéro d'entreprise
+            # Ajouter à la queue avec priorité haute (recherche manuelle)
+            if page_data['total'] == 0 and query:
+                # Vérifier si c'est un format de numéro valide (avec ou sans points)
+                import re
+                numero_clean = query.replace('.', '').replace(' ', '')
+                if re.match(r'^\d{10}$', numero_clean):
+                    # Formater correctement
+                    numero_formatted = f"{numero_clean[:4]}.{numero_clean[4:7]}.{numero_clean[7:]}"
+                    # Ajouter à la queue Redis avec priorité haute
+                    result = queue_manager.add_to_queue(
+                        enterprise_number=numero_formatted,
+                        priority=2,  # Priorité haute car recherche manuelle
+                        requested_by='user_search'
+                    )
+                    
+                    # Créer un résultat virtuel pour afficher l'entreprise en attente
+                    if result['success']:
+                        page_data['results'] = [{
+                            'numero_entreprise': numero_formatted,
+                            'denomination': 'En cours de chargement...',
+                            'adresse': 'Entreprise ajoutée à la file d\'attente',
+                            'forme_juridique': '-',
+                            'status': 'pending',
+                            'status_display': 'En attente',
+                            'is_scraped': False,
+                            'in_queue': True,
+                            'queue_priority': 2,
+                            'queue_status': 'pending'
+                        }]
+                        page_data['total'] = 1
+                        page_data['count'] = 1
 
-        # Marquer les résultats comme scrapés et préparer le retour
+        # Marquer les résultats comme scrapés et enrichir avec info queue
         for result in page_data['results']:
-            result['is_scraped'] = True
+            # Vérifier si l'entreprise est en queue AVANT de marquer comme scraped
+            numero = result.get('numero_entreprise')
+            queue_info = None
+            
+            if numero:
+                queue_info = queue_manager.get_item_metadata(numero)
+                if queue_info:
+                    result['in_queue'] = True
+                    result['queue_priority'] = queue_info.get('priority', 1)
+                    result['queue_status'] = queue_info.get('status', 'pending')
+                    # Si en queue, pas encore scrapé
+                    result['is_scraped'] = False
+                else:
+                    result['in_queue'] = False
+                    result['queue_priority'] = 1
+                    result['queue_status'] = None
+                    # Si pas en queue et dans la BDD, c'est scrapé
+                    result['is_scraped'] = True
+            else:
+                result['is_scraped'] = True
+                result['in_queue'] = False
+                result['queue_priority'] = 1
+                result['queue_status'] = None
+            
             result['status_display'] = result.get('status', 'Inconnu')
 
         return jsonify({
@@ -154,6 +223,10 @@ def api_dashboard_stats():
     try:
         # Récupérer toutes les stats
         stats = collector.get_dashboard_data()
+        
+        # Ajouter les stats de la queue Redis
+        queue_stats = queue_manager.get_queue_stats()
+        stats['queue'] = queue_stats
         
         # Ajouter timestamp
         stats['timestamp'] = datetime.now().isoformat()
@@ -239,5 +312,162 @@ def api_stats_count():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/queue/stats')
+def api_queue_stats():
+    """API pour les statistiques de la file d'attente (Redis)"""
+    try:
+        stats = queue_manager.get_queue_stats()
+        return jsonify({
+            'success': True,
+            'stats': stats
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/queue/items')
+def api_queue_items():
+    """API pour récupérer les éléments de la file d'attente (Redis)"""
+    try:
+        status = request.args.get('status', 'pending')
+        page = int(request.args.get('page', '1'))
+        per_page = int(request.args.get('per_page', '20'))
+        
+        offset = (page - 1) * per_page
+        items = queue_manager.get_queue_items(
+            status=status,
+            limit=per_page,
+            offset=offset
+        )
+        
+        # Calculer le total depuis les stats
+        stats = queue_manager.get_queue_stats()
+        total = {
+            'pending': stats['total_pending'],
+            'processing': stats['total_processing'],
+            'completed': stats['total_completed'],
+            'failed': stats['total_failed']
+        }.get(status, 0)
+        
+        return jsonify({
+            'success': True,
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'items': items
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/queue/add', methods=['POST'])
+def api_queue_add():
+    """API pour ajouter une entreprise à la file d'attente avec priorité (Redis)"""
+    try:
+        data = request.get_json()
+        
+        if not data or 'enterprise_number' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'enterprise_number requis'
+            }), 400
+        
+        enterprise_number = data['enterprise_number']
+        priority = data.get('priority', 2)  # Par défaut priorité haute (recherche manuelle)
+        requested_by = data.get('requested_by', 'user')
+        
+        result = queue_manager.add_to_queue(
+            enterprise_number=enterprise_number,
+            priority=priority,
+            requested_by=requested_by
+        )
+        
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/queue/remove/<enterprise_number>', methods=['DELETE'])
+def api_queue_remove(enterprise_number):
+    """API pour supprimer une entreprise de la file d'attente (Redis)"""
+    try:
+        result = queue_manager.remove_from_queue(enterprise_number)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/queue/dag-assignments')
+def api_queue_dag_assignments():
+    """API pour voir quelles entreprises sont assignées à quels DAGs"""
+    try:
+        assignments = queue_manager.get_enterprises_by_dag()
+        return jsonify({
+            'success': True,
+            'assignments': assignments,
+            'total_dags': len(assignments)
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================================================
+# WebSocket Events
+# ============================================================================
+
+@socketio.on('connect')
+def handle_connect():
+    """Client connecté au WebSocket"""
+    print('🔌 Client WebSocket connecté')
+    emit('connected', {'status': 'connected'})
+
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Client déconnecté du WebSocket"""
+    print('🔌 Client WebSocket déconnecté')
+
+
+@socketio.on('subscribe_queue')
+def handle_subscribe_queue():
+    """Client s'abonne aux mises à jour de la queue Redis"""
+    print('📡 Client abonné aux mises à jour de la queue')
+    # Envoyer immédiatement les stats actuelles
+    try:
+        stats = queue_manager.get_queue_stats()
+        emit('queue_stats_update', stats)
+    except Exception as e:
+        print(f'Erreur lors de l\'envoi des stats: {e}')
+
+
+@socketio.on('subscribe_dag_assignments')
+def handle_subscribe_dag_assignments():
+    """Client s'abonne aux assignments DAG"""
+    print('📡 Client abonné aux assignments DAG')
+    try:
+        assignments = queue_manager.get_enterprises_by_dag()
+        emit('dag_assignments_update', assignments)
+    except Exception as e:
+        print(f'Erreur lors de l\'envoi des assignments: {e}')
+
+
+def broadcast_queue_update():
+    """Diffuser une mise à jour de la queue à tous les clients connectés"""
+    try:
+        stats = queue_manager.get_queue_stats()
+        socketio.emit('queue_stats_update', stats, broadcast=True)
+    except Exception as e:
+        print(f'Erreur broadcast queue: {e}')
+
+
+def broadcast_dag_assignments_update():
+    """Diffuser une mise à jour des assignments DAG"""
+    try:
+        assignments = queue_manager.get_enterprises_by_dag()
+        socketio.emit('dag_assignments_update', assignments, broadcast=True)
+    except Exception as e:
+        print(f'Erreur broadcast assignments: {e}')
+
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
