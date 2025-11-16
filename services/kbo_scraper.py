@@ -10,6 +10,7 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 from proxy_manager import ProxyManager
+from queue_manager import QueueManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class KBOScraper:
-    def __init__(self, proxy_manager=None, output_dir="data/html_pages", use_proxy=True):
+    def __init__(self, proxy_manager=None, output_dir="data/html_pages", use_proxy=True, queue_manager=None):
         """
         Initialise le scraper KBO
         
@@ -27,10 +28,12 @@ class KBOScraper:
             proxy_manager: Instance de ProxyManager (optionnel si use_proxy=False)
             output_dir: Répertoire pour stocker les pages HTML
             use_proxy: Utiliser les proxies ou non (False = connexion directe)
+            queue_manager: Instance de QueueManager pour Redis (optionnel)
         """
         self.proxy_manager = proxy_manager
         self.output_dir = output_dir
         self.use_proxy = use_proxy
+        self.queue_manager = queue_manager or QueueManager()
         self.stats = {
             'total': 0,
             'success': 0,
@@ -62,6 +65,8 @@ class KBOScraper:
             logger.info(f"⏭ {enterprise_number} déjà scrapé, ignoré")
             self.stats['total'] += 1
             self.stats['success'] += 1
+            # Marquer comme complété dans Redis
+            self.queue_manager.mark_as_completed(enterprise_number)
             return (True, None)
         
         self.stats['total'] += 1
@@ -134,6 +139,9 @@ class KBOScraper:
                     self.proxy_manager.release_proxy(proxy, success=True)
                 self.stats['success'] += 1
                 
+                # Marquer comme complété dans Redis
+                self.queue_manager.mark_as_completed(enterprise_number)
+                
                 # Délai respectueux entre requêtes en mode direct
                 if not self.use_proxy or not proxy:
                     time.sleep(2)
@@ -174,6 +182,13 @@ class KBOScraper:
             'enterprise_number': enterprise_number,
             'error': last_error['message']
         })
+        
+        # Marquer comme échoué dans Redis avec le type d'erreur
+        self.queue_manager.mark_as_failed(
+            enterprise_number,
+            error_type=last_error['type'],
+            error_msg=last_error['message']
+        )
         
         # Ajouter à la file de retry basse priorité si fournie
         if retry_queue is not None:

@@ -38,7 +38,7 @@ def load_enterprises_from_csv(csv_file):
 
 
 def init_redis_queue():
-    """Initialise la queue Redis avec toutes les entreprises"""
+    """Initialise la queue Redis avec toutes les entreprises NON SCRAPÉES"""
     print("\n" + "="*70)
     print("🚀 INITIALISATION DE LA QUEUE REDIS")
     print("="*70)
@@ -70,13 +70,43 @@ def init_redis_queue():
     if recovery_result['success']:
         print(f"   → {recovery_result['count']} entreprises remises en queue")
     
-    # Ajouter les entreprises à la queue
-    print(f"\n📥 Ajout des entreprises à la queue Redis...")
+    # OPTIMISATION: Lister les fichiers HTML existants (plus rapide que 1.9M checks)
+    html_dir = os.path.join(parent_dir, "data/html_pages")
+    print(f"\n🔍 Lecture des fichiers HTML existants...")
+    
+    scraped_enterprises = set()
+    if os.path.exists(html_dir):
+        for filename in os.listdir(html_dir):
+            if filename.endswith('.html'):
+                enterprise = filename.replace('.html', '')
+                scraped_enterprises.add(enterprise)
+    
+    print(f"   ✅ {len(scraped_enterprises):,} entreprises déjà scrapées trouvées")
+    
+    # Marquer les entreprises scrapées comme complétées
+    print(f"\n✓ Marquage des entreprises scrapées comme complétées dans Redis...")
+    for enterprise in scraped_enterprises:
+        queue_manager.mark_as_completed(enterprise)
+    
+    # Convertir enterprises en set pour filtrage rapide
+    all_enterprises = set(enterprises)
+    to_scrape = all_enterprises - scraped_enterprises
+    
+    print(f"   ⏳ {len(to_scrape):,} entreprises à ajouter à la queue")
+    
+    # Ajouter SEULEMENT un nombre limité à la queue (les DAGs rechargeront automatiquement)
+    MAX_QUEUE_SIZE = 1000  # Limite pour ne pas saturer Redis
+    
+    print(f"\n📥 Ajout des premières entreprises à la queue Redis (max {MAX_QUEUE_SIZE})...")
+    print(f"   Note: Les DAGs rechargeront automatiquement quand la queue sera basse")
     
     added_count = 0
     already_count = 0
     
-    for i, enterprise in enumerate(enterprises, 1):
+    # Convertir en liste pour limiter
+    to_scrape_list = list(to_scrape)[:MAX_QUEUE_SIZE]
+    
+    for i, enterprise in enumerate(to_scrape_list, 1):
         result = queue_manager.add_to_queue(
             enterprise_number=enterprise,
             priority=1,  # Priorité normale
@@ -91,12 +121,15 @@ def init_redis_queue():
                 already_count += 1
         
         # Afficher progression
-        if i % 1000 == 0:
-            print(f"   → {i:,}/{len(enterprises):,} traités...")
+        if i % 100 == 0:
+            print(f"   → {i:,}/{len(to_scrape_list):,} traités...")
     
     print(f"\n✅ Traitement terminé:")
-    print(f"   - Ajoutées: {added_count:,}")
+    print(f"   - Déjà scrapées (marquées complétées): {len(scraped_enterprises):,}")
+    print(f"   - Total restant à scraper: {len(to_scrape):,}")
+    print(f"   - Ajoutées à la queue: {added_count:,}")
     print(f"   - Déjà présentes: {already_count:,}")
+    print(f"\n💡 Les DAGs rechargeront automatiquement le CSV quand la queue < 100")
     
     # Stats finales
     stats = queue_manager.get_queue_stats()

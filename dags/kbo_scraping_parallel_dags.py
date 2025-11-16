@@ -65,10 +65,25 @@ def load_all_enterprises():
     return enterprises
 
 
-def is_already_scraped(enterprise_number):
-    """Vérifie si une entreprise est déjà scrapée"""
+def is_already_scraped(enterprise_number, queue_manager=None):
+    """
+    Vérifie si une entreprise est déjà scrapée
+    Vérifie à la fois le fichier HTML ET le statut Redis
+    """
+    # Vérifier d'abord le fichier HTML (plus rapide)
     output_file = os.path.join(HTML_DIR, f"{enterprise_number}.html")
-    return os.path.exists(output_file)
+    if os.path.exists(output_file):
+        return True
+    
+    # Vérifier aussi dans Redis si déjà complété
+    if queue_manager:
+        try:
+            if queue_manager.redis.sismember(queue_manager.COMPLETED_KEY, enterprise_number):
+                return True
+        except:
+            pass  # Si Redis erreur, on continue avec la vérification fichier
+    
+    return False
 
 
 def is_being_scraped(enterprise_number):
@@ -187,28 +202,76 @@ def get_next_enterprise_for_dag(dag_id):
     next_enterprises = queue_manager.get_next_to_scrape(count=1, dag_id=dag_id)
     
     if not next_enterprises:
-        # Si queue Redis vide, charger depuis CSV
-        all_enterprises = load_all_enterprises()
-        if not all_enterprises:
-            print(f"❌ {dag_id}: Aucune entreprise disponible")
-            return None
+        # Si queue Redis vide, essayer de recharger avec un LOCK pour éviter les rechargements multiples
+        RELOAD_LOCK_KEY = "scraping:reload_lock"
         
-        # Ajouter toutes les entreprises non scrapées à la queue Redis
-        added_count = 0
-        for enterprise in all_enterprises:
-            if not is_already_scraped(enterprise):
-                result = queue_manager.add_to_queue(
-                    enterprise_number=enterprise,
-                    priority=1,  # Priorité normale
-                    requested_by='system'
-                )
-                if result['success'] and result['action'] == 'added':
-                    added_count += 1
+        # Essayer d'acquérir le lock (expire après 60 secondes)
+        lock_acquired = queue_manager.redis.set(RELOAD_LOCK_KEY, dag_id, ex=60, nx=True)
         
-        print(f"📋 {dag_id}: {added_count} entreprises ajoutées à la queue Redis")
+        if not lock_acquired:
+            # Un autre DAG est déjà en train de recharger, attendre un peu
+            print(f"⏳ {dag_id}: Un autre DAG recharge la queue, attente...")
+            import time
+            time.sleep(5)
+            
+            # Réessayer de récupérer une entreprise
+            next_enterprises = queue_manager.get_next_to_scrape(count=1, dag_id=dag_id)
+            
+            if not next_enterprises:
+                print(f"✅ {dag_id}: Toujours aucune entreprise disponible")
+                return None
+            else:
+                # Ok, le rechargement par l'autre DAG a fonctionné
+                print(f"✅ {dag_id}: Entreprise disponible après rechargement par autre DAG")
+                enterprise_number = next_enterprises[0]
+                
+                if is_already_scraped(enterprise_number, queue_manager):
+                    queue_manager.mark_as_completed(enterprise_number)
+                    return get_next_enterprise_for_dag(dag_id)
+                
+                print(f"📋 {dag_id}: Entreprise {enterprise_number} (depuis Redis)")
+                return (enterprise_number, 0)
         
-        # Réessayer de récupérer
-        next_enterprises = queue_manager.get_next_to_scrape(count=1, dag_id=dag_id)
+        # Lock acquis, on peut recharger
+        try:
+            all_enterprises = load_all_enterprises()
+            if not all_enterprises:
+                print(f"❌ {dag_id}: Aucune entreprise disponible")
+                return None
+            
+            # Limiter le nombre d'entreprises ajoutées pour ne pas saturer Redis
+            MAX_BATCH_SIZE = 1000
+            
+            print(f"📋 {dag_id}: Queue vide, rechargement de {MAX_BATCH_SIZE} entreprises depuis CSV...")
+            
+            # Ajouter seulement les premières entreprises non scrapées (max 1000)
+            added_count = 0
+            checked_count = 0
+            for enterprise in all_enterprises:
+                checked_count += 1
+                
+                # Arrêter si on a assez ajouté
+                if added_count >= MAX_BATCH_SIZE:
+                    break
+                
+                # Vérifier si déjà scrapée (HTML ou Redis)
+                if not is_already_scraped(enterprise, queue_manager):
+                    result = queue_manager.add_to_queue(
+                        enterprise_number=enterprise,
+                        priority=1,  # Priorité normale
+                        requested_by='system'
+                    )
+                    if result['success'] and result['action'] == 'added':
+                        added_count += 1
+            
+            print(f"📋 {dag_id}: {added_count} nouvelles entreprises ajoutées (vérifié {checked_count} entreprises)")
+            
+            # Réessayer de récupérer
+            next_enterprises = queue_manager.get_next_to_scrape(count=1, dag_id=dag_id)
+        
+        finally:
+            # Libérer le lock
+            queue_manager.redis.delete(RELOAD_LOCK_KEY)
         
         if not next_enterprises:
             print(f"✅ {dag_id}: File d'attente terminée")
@@ -217,9 +280,10 @@ def get_next_enterprise_for_dag(dag_id):
     enterprise_number = next_enterprises[0]
     
     # Vérifier validité (au cas où)
-    if is_already_scraped(enterprise_number):
+    if is_already_scraped(enterprise_number, queue_manager):
         queue_manager.mark_as_completed(enterprise_number)
         # Réessayer avec la suivante
+        return get_next_enterprise_for_dag(dag_id)
         return get_next_enterprise_for_dag(dag_id)
     
     print(f"📋 {dag_id}: Entreprise {enterprise_number} (depuis Redis)")

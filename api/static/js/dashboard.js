@@ -24,7 +24,6 @@ const successRequestsHour = document.getElementById('successRequestsHour');
 // Tables
 const proxiesTableBody = document.getElementById('proxiesTableBody');
 const proxiesPagination = document.getElementById('proxiesPagination');
-const dagsTableBody = document.getElementById('dagsTableBody');
 const failuresTableBody = document.getElementById('failuresTableBody');
 const failuresByType = document.getElementById('failuresByType');
 const validationReport = document.getElementById('validationReport');
@@ -110,11 +109,6 @@ async function loadGeneralStats() {
         
         // Proxies (paginated table)
         await loadProxiesPage(1, 10);
-        
-        // DAGs
-        if (stats.dags_status) {
-            displayDags(stats.dags_status);
-        }
         
         // Échecs
         if (stats.failures) {
@@ -203,26 +197,6 @@ function renderProxiesPagination(total, page, per_page) {
     const next = document.getElementById('proxiesNext');
     if (prev) prev.addEventListener('click', () => loadProxiesPage(page - 1, per_page));
     if (next) next.addEventListener('click', () => loadProxiesPage(page + 1, per_page));
-}
-
-// Afficher les DAGs
-function displayDags(dags) {
-    const dagsList = Object.entries(dags);
-    
-    if (dagsList.length === 0) {
-        dagsTableBody.innerHTML = '<tr><td colspan="5" class="text-center">Aucun DAG enregistré</td></tr>';
-        return;
-    }
-    
-    dagsTableBody.innerHTML = dagsList.map(([dagId, stats]) => `
-        <tr>
-            <td>${dagId}</td>
-            <td>${formatNumber(stats.total_scraped || 0)}</td>
-            <td>${formatNumber(stats.current_position || 0)}</td>
-            <td><span class="proxy-status ${stats.status}">${stats.status || 'unknown'}</span></td>
-            <td>${stats.last_scrape ? formatDate(stats.last_scrape) : 'N/A'}</td>
-        </tr>
-    `).join('');
 }
 
 // Afficher les échecs
