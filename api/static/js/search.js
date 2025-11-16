@@ -52,6 +52,12 @@ function displayResults(results) {
     resultsGrid.innerHTML = '';
     resultsSection.style.display = 'block';
     
+    // Supprimer l'ancienne alerte si elle existe
+    const existingAlert = document.getElementById('high-priority-alert');
+    if (existingAlert) {
+        existingAlert.remove();
+    }
+    
     results.forEach(entreprise => {
         const card = createEntrepriseCard(entreprise);
         resultsGrid.appendChild(card);
@@ -89,12 +95,6 @@ function displayResults(results) {
         if (window.searchAutoRefreshInterval) {
             clearInterval(window.searchAutoRefreshInterval);
             window.searchAutoRefreshInterval = null;
-            
-            // Supprimer l'alerte si elle existe
-            const existingAlert = document.getElementById('high-priority-alert');
-            if (existingAlert) {
-                existingAlert.remove();
-            }
         }
     }
 }
