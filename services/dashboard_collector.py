@@ -561,6 +561,29 @@ class DashboardCollector:
         finally:
             session.close()
     
+    def list_all_entreprises(self, limit=100):
+        """Liste toutes les entreprises (limitées)."""
+        session = self.Session()
+        try:
+            entreprises = session.query(Entreprise).order_by(
+                Entreprise.last_update.desc()
+            ).limit(limit).all()
+            
+            results = []
+            for e in entreprises:
+                results.append({
+                    'numero_entreprise': e.numero_entreprise,
+                    'denomination': e.denomination,
+                    'status': e.status,
+                    'adresse': e.adresse,
+                    'forme_juridique': e.forme_juridique,
+                    'last_update': e.last_update.isoformat() if e.last_update else None
+                })
+            
+            return results
+        finally:
+            session.close()
+    
     def get_all_entreprises_count(self):
         """Retourne le nombre total d'entreprises dans la BDD."""
         session = self.Session()

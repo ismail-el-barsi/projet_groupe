@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Admin - KBO</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <h1>🏢 KBO Dashboard</h1>
+            </div>
+            <div class="nav-links">
+                <a href="/">Recherche</a>
+                <a href="/dashboard" class="active">Dashboard Admin</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container">
+        <div class="dashboard-header">
+            <h2>📊 Dashboard Administrateur</h2>
+            <div class="refresh-info">
+                <span id="lastUpdate">Dernière mise à jour: --</span>
+                <button id="refreshBtn" class="btn-refresh">🔄 Actualiser</button>
+            </div>
+        </div>
+
+        <!-- État général -->
+        <section class="stats-overview">
+            <div class="stat-card">
+                <div class="stat-icon">✅</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="totalScraped">--</div>
+                    <div class="stat-label">Entreprises scrapées</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">💾</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="totalInDB">--</div>
+                    <div class="stat-label">Entreprises en BDD</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">⏳</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="totalQueue">--</div>
+                    <div class="stat-label">En file d'attente</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">❌</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="totalFailed">--</div>
+                    <div class="stat-label">Échecs</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Performance -->
+        <section class="dashboard-section">
+            <h3>⚡ Indicateurs de performance</h3>
+            <div class="performance-grid">
+                <div class="info-card">
+                    <h4>Taux de réussite</h4>
+                    <div class="metric-value" id="successRate">--%</div>
+                </div>
+                <div class="info-card">
+                    <h4>Requêtes/minute (moyenne)</h4>
+                    <div class="metric-value" id="avgRequestsPerMin">--</div>
+                </div>
+                <div class="info-card">
+                    <h4>Dernière heure</h4>
+                    <div class="metric-detail">
+                        <span id="totalRequestsHour">--</span> requêtes
+                        (<span id="successRequestsHour">--</span> succès)
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- État des proxies -->
+        <section class="dashboard-section">
+            <h3>🌐 État des proxies</h3>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Proxy IP</th>
+                            <th>Total Requêtes</th>
+                            <th>Succès</th>
+                            <th>Échecs</th>
+                            <th>Statut</th>
+                            <th>Dernière utilisation</th>
+                        </tr>
+                    </thead>
+                    <tbody id="proxiesTableBody">
+                        <tr>
+                            <td colspan="6" class="text-center">Chargement...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- État des DAGs -->
+        <section class="dashboard-section">
+            <h3>🔄 État des DAGs</h3>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>DAG ID</th>
+                            <th>Total Scrapé</th>
+                            <th>Position actuelle</th>
+                            <th>Statut</th>
+                            <th>Dernier scraping</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dagsTableBody">
+                        <tr>
+                            <td colspan="5" class="text-center">Chargement...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Échecs récents -->
+        <section class="dashboard-section">
+            <h3>⚠️ Échecs récents</h3>
+            <div class="failures-stats" id="failuresByType"></div>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Entreprise</th>
+                            <th>DAG</th>
+                            <th>Type d'erreur</th>
+                            <th>Message</th>
+                        </tr>
+                    </thead>
+                    <tbody id="failuresTableBody">
+                        <tr>
+                            <td colspan="5" class="text-center">Chargement...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Rapport de validation -->
+        <section class="dashboard-section">
+            <h3>✅ Qualité des données</h3>
+            <div id="validationReport" class="validation-report">
+                <p>Chargement du rapport de validation...</p>
+            </div>
+        </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>

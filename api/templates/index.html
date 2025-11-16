@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KBO Dashboard - Recherche d'entreprises</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <h1>🏢 KBO Dashboard</h1>
+            </div>
+            <div class="nav-links">
+                <a href="/" class="active">Recherche</a>
+                <a href="/dashboard">Dashboard Admin</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container">
+        <div class="search-section">
+            <h2>Rechercher une entreprise</h2>
+            <div class="search-box">
+                <input 
+                    type="text" 
+                    id="searchInput" 
+                    placeholder="Numéro d'entreprise (ex: 0203430576) ou nom d'entreprise"
+                    autocomplete="off"
+                >
+                <button id="searchBtn">🔍 Rechercher</button>
+                <button id="showAllBtn" class="btn-show-all">📋 Afficher tout</button>
+            </div>
+            <div id="searchInfo" class="search-info"></div>
+        </div>
+
+        <div id="resultsSection" class="results-section" style="display: none;">
+            <h3>Résultats de recherche</h3>
+            <div id="resultsGrid" class="results-grid"></div>
+        </div>
+
+        <div id="loadingSpinner" class="loading-spinner" style="display: none;">
+            <div class="spinner"></div>
+            <p>Recherche en cours...</p>
+        </div>
+    </main>
+
+    <script src="{{ url_for('static', filename='js/search.js') }}"></script>
+</body>
+</html>

@@ -32,13 +32,14 @@ proxies_list.txt
 *.csv
 data/*.csv
 
+*.env
+
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-*.html
 *.txt
 
 *.lock

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Détails Entreprise - KBO Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <h1>🏢 KBO Dashboard</h1>
+            </div>
+            <div class="nav-links">
+                <a href="/">Recherche</a>
+                <a href="/dashboard">Dashboard Admin</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container">
+        <div class="breadcrumb">
+            <a href="/">← Retour à la recherche</a>
+        </div>
+
+        <div id="loadingSpinner" class="loading-spinner">
+            <div class="spinner"></div>
+            <p>Chargement des données...</p>
+        </div>
+
+        <div id="errorMessage" class="error-message" style="display: none;"></div>
+
+        <div id="entrepriseContent" style="display: none;">
+            <!-- En-tête entreprise -->
+            <div class="entreprise-header">
+                <div class="header-main">
+                    <h1 id="denomination"></h1>
+                    <span id="statusBadge" class="status-badge"></span>
+                </div>
+                <div class="header-info">
+                    <span id="numeroEntreprise"></span>
+                </div>
+            </div>
+
+            <!-- Onglets -->
+            <div class="tabs">
+                <button class="tab-button active" data-tab="presentation">Présentation</button>
+                <button class="tab-button" data-tab="juridique">Informations Juridiques</button>
+                <button class="tab-button" data-tab="activite">Activité</button>
+                <button class="tab-button" data-tab="dirigeants">Dirigeants</button>
+            </div>
+
+            <!-- Contenu des onglets -->
+            <div class="tab-content active" id="presentation">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h3>📍 Adresse principale</h3>
+                        <p id="adresse"></p>
+                    </div>
+                    <div class="info-card">
+                        <h3>📅 Date de création</h3>
+                        <p id="dateCreation"></p>
+                    </div>
+                    <div class="info-card">
+                        <h3>📞 Contact</h3>
+                        <div id="contactInfo"></div>
+                    </div>
+                    <div class="info-card">
+                        <h3>📊 Statut</h3>
+                        <p id="status"></p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="juridique">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h3>⚖️ Forme juridique</h3>
+                        <p id="formeJuridique"></p>
+                    </div>
+                    <div class="info-card">
+                        <h3>🏛️ Type d'entité</h3>
+                        <p id="typeEntite"></p>
+                    </div>
+                    <div class="info-card">
+                        <h3>💼 Numéro de TVA</h3>
+                        <p id="numeroTVA"></p>
+                    </div>
+                    <div class="info-card">
+                        <h3>🏢 Nombre d'établissements</h3>
+                        <p id="nombreEtablissements"></p>
+                    </div>
+                    <div class="info-card">
+                        <h3>💰 Capital social</h3>
+                        <p id="capitalSocial"></p>
+                    </div>
+                    <div class="info-card">
+                        <h3>⚖️ Situation juridique</h3>
+                        <p id="situationJuridique"></p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="activite">
+                <div class="info-card">
+                    <h3>📋 Activités TVA</h3>
+                    <div id="activitesTVA"></div>
+                </div>
+                <div class="info-card">
+                    <h3>📋 Activités ONSS</h3>
+                    <div id="activitesONSS"></div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="dirigeants">
+                <div class="info-card">
+                    <h3>👔 Dirigeants et Représentants</h3>
+                    <div id="dirigeantsList"></div>
+                </div>
+                <div class="info-card">
+                    <h3>🎖️ Qualités</h3>
+                    <div id="qualitesList"></div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const numeroEntreprise = "{{ numero }}";
+    </script>
+    <script src="{{ url_for('static', filename='js/entreprise.js') }}"></script>
+</body>
+</html>
