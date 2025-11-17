@@ -400,16 +400,19 @@ def scrape_single_enterprise_task(dag_id):
         )
         
         # Marquer comme échoué dans Redis (retry automatique si < 3 tentatives)
-        queue_manager.mark_as_failed(
+        result = queue_manager.mark_as_failed(
             enterprise_number=enterprise_number,
             error_type=error_type,
             error_msg=error_msg
         )
         
+        # Afficher le message avec le compteur de tentatives
+        if result.get('action') == 'retry':
+            attempts = result.get('attempts', 0)
+            print(f"⚠️  {dag_id}: {enterprise_number} échec (tentative #{attempts}) - {error_type} - Remis en queue")
+        
         # Mise à jour temps réel du dashboard
         dashboard.update_general_stats()
-        
-        print(f"❌ {dag_id}: {enterprise_number} échec - {error_type}")
     
     # Résultat
     print(f"{'='*60}\n")

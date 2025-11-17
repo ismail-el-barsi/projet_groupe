@@ -6,7 +6,7 @@ const lastUpdate = document.getElementById('lastUpdate');
 const totalScraped = document.getElementById('totalScraped');
 const totalInDB = document.getElementById('totalInDB');
 const totalQueue = document.getElementById('totalQueue');
-const totalFailed = document.getElementById('totalFailed');
+const totalRetrying = document.getElementById('totalRetrying');
 
 // Queue stats
 const queuePending = document.getElementById('queuePending');
@@ -72,13 +72,13 @@ async function loadGeneralStats() {
         // Stats générales
         if (stats.general) {
             totalScraped.textContent = formatNumber(stats.general.total_scraped || 0);
-            totalFailed.textContent = formatNumber(stats.general.total_failed || 0);
         }
         
         // Stats de la queue Redis EN TEMPS RÉEL (priorité absolue)
         if (queueData.success && queueData.stats) {
             const qStats = queueData.stats;
             totalQueue.textContent = formatNumber(qStats.total_queue || 0);
+            totalRetrying.textContent = formatNumber(qStats.total_retrying || 0);
             
             // Mettre à jour aussi les mini-stats de la queue
             if (queuePending) queuePending.textContent = formatNumber(qStats.total_pending || 0);

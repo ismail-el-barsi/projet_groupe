@@ -345,8 +345,7 @@ def api_queue_items():
         total = {
             'pending': stats['total_pending'],
             'processing': stats['total_processing'],
-            'completed': stats['total_completed'],
-            'failed': stats['total_failed']
+            'completed': stats['total_completed']
         }.get(status, 0)
         
         return jsonify({

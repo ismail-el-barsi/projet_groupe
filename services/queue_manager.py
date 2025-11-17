@@ -30,6 +30,7 @@ class QueueManager:
             # Essayer de détecter l'environnement
             try:
                 import socket
+
                 # Si on peut résoudre 'redis', on est probablement dans Docker
                 socket.gethostbyname('redis')
                 default_redis = "redis://redis:6379/0"
@@ -138,18 +139,26 @@ class QueueManager:
     
     def _update_metadata(self, enterprise_number: str, priority: int, requested_by: str):
         """Sauvegarde les métadonnées d'une entreprise"""
+        metadata_key = f"{self.METADATA_KEY}:{enterprise_number}"
+        
+        # Récupérer les attempts existants pour ne pas les écraser
+        existing_attempts = self.redis.hget(metadata_key, 'attempts')
+        attempts = int(existing_attempts) if existing_attempts else 0
+        
         metadata = {
             'priority': priority,
             'requested_by': requested_by,
             'added_at': datetime.now().isoformat(),
-            'attempts': 0,
+            'attempts': attempts,  # Préserver les attempts existants
             'assigned_dag': None,  # Quel DAG va traiter cette entreprise
             'assigned_at': None
         }
-        self.redis.hset(
-            f"{self.METADATA_KEY}:{enterprise_number}",
-            mapping={k: json.dumps(v) if isinstance(v, (dict, list)) else str(v) for k, v in metadata.items()}
-        )
+        # Stocker attempts comme int, le reste comme string
+        self.redis.hset(metadata_key, 'attempts', attempts)
+        for k, v in metadata.items():
+            if k != 'attempts':  # attempts déjà défini
+                value = json.dumps(v) if isinstance(v, (dict, list)) else str(v) if v is not None else ''
+                self.redis.hset(metadata_key, k, value)
     
     def get_next_to_scrape(self, count: int = 1, dag_id: str = None) -> List[str]:
         """
@@ -210,8 +219,6 @@ class QueueManager:
             self.redis.srem(self.PROCESSING_KEY, enterprise_number)
             # Ajouter aux complétés
             self.redis.sadd(self.COMPLETED_KEY, enterprise_number)
-            # Supprimer des échecs si présent
-            self.redis.hdel(self.FAILED_KEY, enterprise_number)
             
             logger.info(f"✓ Complété: {enterprise_number}")
             
@@ -238,23 +245,22 @@ class QueueManager:
             metadata_key = f"{self.METADATA_KEY}:{enterprise_number}"
             attempts = int(self.redis.hget(metadata_key, 'attempts') or 0)
             
-            # Si moins de 3 tentatives, remettre en queue avec priorité basse
-            if attempts < 3:
-                # Remettre en queue avec priorité 1 (normale)
-                self.add_to_queue(enterprise_number, priority=1, requested_by='retry')
-                logger.warning(f"⚠ Échec {enterprise_number} (tentative {attempts}/3) - remis en queue")
-            else:
-                # Trop de tentatives, marquer comme échec définitif
-                failure_data = {
-                    'error_type': error_type,
-                    'error_msg': error_msg,
-                    'attempts': attempts,
-                    'failed_at': datetime.now().isoformat()
-                }
-                self.redis.hset(self.FAILED_KEY, enterprise_number, json.dumps(failure_data))
-                logger.error(f"❌ Échec définitif: {enterprise_number} (3 tentatives)")
+            # Sauvegarder le type d'erreur et le message dans les métadonnées
+            self.redis.hset(metadata_key, 'last_error_type', error_type)
+            if error_msg:
+                self.redis.hset(metadata_key, 'last_error_msg', error_msg)
+            self.redis.hset(metadata_key, 'last_failed_at', datetime.now().isoformat())
             
-            return {'success': True, 'enterprise_number': enterprise_number}
+            # Toujours remettre en queue peu importe le nombre de tentatives
+            self.add_to_queue(enterprise_number, priority=1, requested_by='retry')
+            logger.warning(f"⚠️  Échec {enterprise_number} (tentative #{attempts}) - Type: {error_type} - Remis en queue")
+            
+            return {
+                'success': True,
+                'enterprise_number': enterprise_number,
+                'action': 'retry',
+                'attempts': attempts
+            }
             
         except Exception as e:
             logger.exception(f"Erreur mark_as_failed: {e}")
@@ -268,6 +274,7 @@ class QueueManager:
                 'total_processing': 0,
                 'total_completed': 0,
                 'total_failed': 0,
+                'total_retrying': 0,
                 'high_priority': 0,
                 'total_queue': 0
             }
@@ -276,7 +283,16 @@ class QueueManager:
             total_pending = self.redis.zcard(self.QUEUE_KEY)
             total_processing = self.redis.scard(self.PROCESSING_KEY)
             total_completed = self.redis.scard(self.COMPLETED_KEY)
-            total_failed = self.redis.hlen(self.FAILED_KEY)
+            
+            # Compter les entreprises en cours de retry (attempts > 0 mais < 3)
+            total_retrying = 0
+            metadata_keys = self.redis.keys(f"{self.METADATA_KEY}:*")
+            for key in metadata_keys:
+                attempts = int(self.redis.hget(key, 'attempts') or 0)
+                status = self.redis.hget(key, 'status')
+                # Compter si en retry (attempts > 0 et pas encore failed définitivement)
+                if attempts > 0 and status != 'completed' and status != 'failed':
+                    total_retrying += 1
             
             # Compter les éléments haute priorité (score < -1500000)
             high_priority = self.redis.zcount(self.QUEUE_KEY, '-inf', -1500000)
@@ -285,7 +301,7 @@ class QueueManager:
                 'total_pending': total_pending,
                 'total_processing': total_processing,
                 'total_completed': total_completed,
-                'total_failed': total_failed,
+                'total_retrying': total_retrying,
                 'high_priority': high_priority,
                 'total_queue': total_pending + total_processing
             }
@@ -365,15 +381,7 @@ class QueueManager:
                         'status': 'completed'
                     })
             
-            elif status == 'failed':
-                failed_data = self.redis.hgetall(self.FAILED_KEY)
-                for enterprise_number, data_json in list(failed_data.items())[offset:offset + limit]:
-                    data = json.loads(data_json)
-                    items.append({
-                        'enterprise_number': enterprise_number,
-                        'status': 'failed',
-                        **data
-                    })
+            # Plus de statut 'failed' permanent - toutes les erreurs sont des retries
             
             return items
             
