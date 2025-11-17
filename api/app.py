@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, redirect, url_for
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 
@@ -89,6 +89,16 @@ def index():
 def entreprise_detail(numero):
     """Page de détails d'une entreprise"""
     return render_template('entreprise.html', numero=numero)
+
+
+@app.route('/entreprise/<numero>/original')
+def entreprise_original(numero):
+    """Redirige vers la page publique KBO pour le numéro d'entreprise donné"""
+    # Normaliser le numéro (supprimer les points)
+    numero_clean = numero.replace('.', '').replace(' ', '')
+    # Utiliser le format de recherche KBO (numéro sans points)
+    kbo_url = f"https://kbopub.economie.fgov.be/kbopub/zoeknummerform.html?lang=fr&nummer={numero_clean}&actionLu=Rechercher"
+    return redirect(kbo_url)
 
 
 @app.route('/dashboard')
