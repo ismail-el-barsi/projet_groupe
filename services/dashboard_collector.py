@@ -72,7 +72,8 @@ class Entreprise(Base):
     # Champs extraits pour faciliter les recherches
     adresse = Column(Text)
     forme_juridique = Column(String(100))
-    numero_tva = Column(String(50))
+    # numero_tva removed: we store entreprise number separately, TVA field redundant
+    # numero_tva = Column(String(50))
     date_creation = Column(String(50))
 
 
@@ -549,7 +550,7 @@ class DashboardCollector:
                 'data': data,  # Stockage complet en JSONB
                 'adresse': presentation.get('adresse_principale'),
                 'forme_juridique': infos_juridiques.get('forme_juridique'),
-                'numero_tva': infos_juridiques.get('numero_tva'),
+                # 'numero_tva' removed (redundant)
                 'date_creation': presentation.get('date_creation')
             }
             
@@ -564,7 +565,7 @@ class DashboardCollector:
                     'data': stmt.excluded.data,
                     'adresse': stmt.excluded.adresse,
                     'forme_juridique': stmt.excluded.forme_juridique,
-                    'numero_tva': stmt.excluded.numero_tva,
+                    # 'numero_tva' removed from upsert
                     'date_creation': stmt.excluded.date_creation
                 }
             )
@@ -603,7 +604,7 @@ class DashboardCollector:
                 'data': entreprise.data,  # Données complètes
                 'adresse': entreprise.adresse,
                 'forme_juridique': entreprise.forme_juridique,
-                'numero_tva': entreprise.numero_tva,
+                # 'numero_tva' intentionally omitted from API response
                 'date_creation': entreprise.date_creation
             }
         finally:

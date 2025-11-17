@@ -140,14 +140,7 @@ class KBOHTMLParser:
             situation_td = situation_elem.find_next_sibling('td')
             legal_info['situation_juridique'] = situation_td.get_text(separator=' ', strip=True)
         
-        # Numéro de TVA
-        numero_elem = self.soup.find('td', string=lambda x: x and "Numéro d'entreprise" in x)
-        if numero_elem:
-            numero_td = numero_elem.find_next_sibling('td')
-            raw_numero = numero_td.get_text(separator=' ', strip=True) if numero_td else ''
-            match = re.search(r'\d{10}', raw_numero.replace('.', ''))
-            if match:
-                legal_info['numero_tva'] = match.group(0)
+        # Numéro de TVA: supprimé (on utilise le numero d'entreprise déjà disponible)
         
         # Siège social (SIRET)
         siret_elem = self.soup.find('td', string=lambda x: x and 'SIRET' in str(x))
@@ -163,10 +156,43 @@ class KBOHTMLParser:
                 if strong:
                     legal_info['nombre_etablissements'] = int(strong.text.strip())
         
-        # Capital social
-        capital_elem = self.soup.find('td', string=lambda x: x and 'Capital' in str(x))
+        # Capital social (extraction plus robuste)
+        capital_text = ''
+        # Cherche toute cellule td dont le texte contient 'capital' (insensible à la casse)
+        capital_elem = self.soup.find(lambda tag: tag.name == 'td' and tag.get_text(strip=True) and 'capital' in tag.get_text(strip=True).lower())
         if capital_elem:
-            legal_info['capital_social'] = capital_elem.find_next_sibling('td').text.strip()
+            # Valeur attendue dans la td suivante
+            val_td = capital_elem.find_next_sibling('td')
+            if val_td and val_td.get_text(strip=True):
+                capital_text = val_td.get_text(separator=' ', strip=True)
+            else:
+                # Fallback : chercher dans la même ligne (<tr>) la cellule suivante
+                tr = capital_elem.find_parent('tr')
+                if tr:
+                    tds = tr.find_all('td')
+                    try:
+                        idx = tds.index(capital_elem)
+                        if idx + 1 < len(tds):
+                            capital_text = tds[idx + 1].get_text(separator=' ', strip=True)
+                    except ValueError:
+                        pass
+
+        # Normaliser et extraire le montant si possible
+        if capital_text:
+            cap = capital_text.replace('\xa0', ' ').strip()
+            # Chercher une valeur monétaire type 249.022.345,57 EUR ou 249.022.345
+            m = re.search(r'([0-9\.\s]+,[0-9]{2})\s*(EUR|€)?', cap)
+            if not m:
+                m = re.search(r'([0-9\.\s]+)\s*(EUR|€)?', cap)
+            if m:
+                # garder la représentation texte complète et aussi une valeur normalisée (chiffres)
+                amount = m.group(1).replace(' ', '').strip()
+                legal_info['capital_social'] = cap
+                legal_info['capital'] = amount
+            else:
+                legal_info['capital_social'] = cap
+        else:
+            legal_info['capital_social'] = None
         
         return legal_info
     

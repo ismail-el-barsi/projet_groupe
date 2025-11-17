@@ -60,11 +60,7 @@ class DataValidator:
                     'format': r'^(Personne morale|Personne physique)$',
                     'description': 'Type d\'entité valide'
                 },
-                'numero_tva': {
-                    'required': False,
-                    'format': r'^\d{10}$',  # Format: 0201543234 (sans points)
-                    'description': 'Numéro TVA à 10 chiffres'
-                },
+                # 'numero_tva' validation removed - it's the entreprise number without dots and not required
                 'nombre_etablissements': {
                     'required': False,
                     'type': int,

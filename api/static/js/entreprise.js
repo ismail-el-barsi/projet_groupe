@@ -82,7 +82,6 @@ function displayEntreprise(entreprise) {
     // Onglet Juridique
     document.getElementById('formeJuridique').textContent = juridique.forme_juridique || 'N/A';
     document.getElementById('typeEntite').textContent = juridique.type_entite || 'N/A';
-    document.getElementById('numeroTVA').textContent = juridique.numero_tva || 'N/A';
     document.getElementById('nombreEtablissements').textContent = juridique.nombre_etablissements !== undefined ? juridique.nombre_etablissements : 'N/A';
     document.getElementById('capitalSocial').textContent = juridique.capital_social || 'N/A';
     document.getElementById('situationJuridique').textContent = juridique.situation_juridique || 'N/A';
