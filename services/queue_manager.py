@@ -251,15 +251,41 @@ class QueueManager:
                 self.redis.hset(metadata_key, 'last_error_msg', error_msg)
             self.redis.hset(metadata_key, 'last_failed_at', datetime.now().isoformat())
             
-            # Toujours remettre en queue peu importe le nombre de tentatives
-            self.add_to_queue(enterprise_number, priority=1, requested_by='retry')
-            logger.warning(f"⚠️  Échec {enterprise_number} (tentative #{attempts}) - Type: {error_type} - Remis en queue")
-            
+            # Récupérer la priorité actuelle depuis les métadonnées (si disponible)
+            stored_priority = self.redis.hget(metadata_key, 'priority') or '1'
+            try:
+                priority = int(stored_priority)
+            except Exception:
+                try:
+                    # Si la valeur est JSON encodée
+                    priority = int(json.loads(stored_priority))
+                except Exception:
+                    priority = 1
+
+            # Remettre en queue avec la même priorité pour que d'autres DAGs haute-prio la reprennent
+            self.add_to_queue(enterprise_number, priority=priority, requested_by='retry')
+
+            # Mettre à jour le statut dans les métadonnées pour indiquer qu'il est de nouveau pending
+            self.redis.hset(metadata_key, 'status', 'pending')
+            # Supprimer l'assignation précédente (assigned_dag/assigned_at)
+            try:
+                self.redis.hdel(metadata_key, 'assigned_dag', 'assigned_at')
+            except Exception:
+                # redis-py older versions accept only single field in hdel; handle gracefully
+                try:
+                    self.redis.hdel(metadata_key, 'assigned_dag')
+                    self.redis.hdel(metadata_key, 'assigned_at')
+                except Exception:
+                    pass
+
+            logger.warning(f"⚠️  Échec {enterprise_number} (tentative #{attempts}) - Type: {error_type} - Remis en queue (priorité: {priority})")
+
             return {
                 'success': True,
                 'enterprise_number': enterprise_number,
                 'action': 'retry',
-                'attempts': attempts
+                'attempts': attempts,
+                'priority': priority
             }
             
         except Exception as e:
