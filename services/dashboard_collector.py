@@ -72,7 +72,8 @@ class Entreprise(Base):
     # Champs extraits pour faciliter les recherches
     adresse = Column(Text)
     forme_juridique = Column(String(100))
-    numero_tva = Column(String(50))
+    # numero_tva removed: we store entreprise number separately, TVA field redundant
+    # numero_tva = Column(String(50))
     date_creation = Column(String(50))
 
 
@@ -107,6 +108,22 @@ class DashboardMetric(Base):
     last_update = Column(DateTime, default=datetime.now)
     metrics = Column(JSONB)
 
+
+class ScrapingQueue(Base):
+    """File d'attente pour le scraping avec gestion de priorités"""
+    __tablename__ = 'scraping_queue'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    enterprise_number = Column(String(50), unique=True, index=True, nullable=False)
+    priority = Column(Integer, default=1, index=True)  # 1=normal, 2=haute, 3=très haute
+    status = Column(String(20), default='pending', index=True)  # pending, processing, completed, failed
+    added_at = Column(DateTime, default=datetime.now, index=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    attempts = Column(Integer, default=0)
+    last_error = Column(Text, nullable=True)
+    requested_by = Column(String(50), default='system')  # system, user, manual
+    
 
 class DashboardCollector:
     def __init__(self, data_dir):
@@ -346,31 +363,63 @@ class DashboardCollector:
         session = self.Session()
         try:
             now = datetime.now()
-            one_hour_ago = now - timedelta(hours=1)
-            
-            # Requêtes dernière heure
-            total_hour = session.query(ScrapingHistory).filter(
-                ScrapingHistory.timestamp > one_hour_ago
-            ).count()
-            
-            success_hour = session.query(ScrapingHistory).filter(
-                ScrapingHistory.timestamp > one_hour_ago,
-                ScrapingHistory.success == True
-            ).count()
-            
-            if total_hour > 0:
-                avg_requests_per_minute = total_hour / 60.0
-                success_rate = (success_hour / total_hour) * 100
+
+            # Try multiple windows to compute real data (no arbitrary fallback)
+            windows = [
+                (timedelta(hours=1), '1h'),
+                (timedelta(hours=24), '24h'),
+                (None, 'all')
+            ]
+
+            used_window = None
+            total_requests = 0
+            success_requests = 0
+            window_minutes = None
+
+            for win, label in windows:
+                if win is None:
+                    # all time
+                    total_requests = session.query(ScrapingHistory).count()
+                    success_requests = session.query(ScrapingHistory).filter(ScrapingHistory.success == True).count()
+                    used_window = 'all'
+                    window_minutes = max(1, (now - datetime(1970,1,1)).total_seconds() / 60.0)  # avoid div by zero
+                else:
+                    since = now - win
+                    total_requests = session.query(ScrapingHistory).filter(ScrapingHistory.timestamp > since).count()
+                    success_requests = session.query(ScrapingHistory).filter(
+                        ScrapingHistory.timestamp > since,
+                        ScrapingHistory.success == True
+                    ).count()
+                    if total_requests > 0:
+                        used_window = label
+                        window_minutes = win.total_seconds() / 60.0
+                        break
+
+            # If we didn't find a non-zero window and used_window == 'all' we still have totals
+            if used_window is None and total_requests > 0:
+                used_window = 'all'
+                # approximate window_minutes as total minutes since first record
+                first = session.query(ScrapingHistory).order_by(ScrapingHistory.timestamp.asc()).first()
+                if first and first.timestamp:
+                    window_minutes = max(1, (now - first.timestamp).total_seconds() / 60.0)
+                else:
+                    window_minutes = 60.0
+
+            # Compute metrics
+            if window_minutes and window_minutes > 0:
+                avg_requests_per_minute = float(total_requests) / float(window_minutes)
             else:
-                avg_requests_per_minute = 0
-                success_rate = 0
-            
+                avg_requests_per_minute = 0.0
+
+            success_rate = (float(success_requests) / float(total_requests) * 100.0) if total_requests > 0 else 0.0
+
             return {
                 "performance": {
                     "success_rate_per_minute": success_rate,
                     "avg_requests_per_minute": avg_requests_per_minute,
-                    "total_requests_last_hour": total_hour,
-                    "success_requests_last_hour": success_hour
+                    "total_requests_window": total_requests,
+                    "success_requests_window": success_requests,
+                    "window": used_window
                 }
             }
         finally:
@@ -432,6 +481,33 @@ class DashboardCollector:
             return {"ips": ips_dict}
         finally:
             session.close()
+
+    def get_ips_stats_paginated(self, page=1, per_page=20):
+        """Récupère les statistiques des IPs avec pagination.
+
+        Retourne dict: total, page, per_page, items (list of {ip, stats})
+        """
+        session = self.Session()
+        try:
+            total = session.query(ProxyStats).count()
+            offset = max(0, (page - 1) * per_page)
+            proxies = session.query(ProxyStats).order_by(ProxyStats.proxy_ip).limit(per_page).offset(offset).all()
+
+            items = []
+            for proxy in proxies:
+                items.append({
+                    'proxy_ip': proxy.proxy_ip,
+                    'total_requests': proxy.total_requests,
+                    'successful_requests': proxy.successful_requests,
+                    'failed_requests': proxy.failed_requests,
+                    'status': proxy.status,
+                    'last_used': proxy.last_used.isoformat() if proxy.last_used else '',
+                    'last_success': proxy.last_success.isoformat() if proxy.last_success else ''
+                })
+
+            return {'total': total, 'page': page, 'per_page': per_page, 'items': items}
+        finally:
+            session.close()
     
     def get_dags_stats(self):
         """Récupère les statistiques des DAGs"""
@@ -474,7 +550,7 @@ class DashboardCollector:
                 'data': data,  # Stockage complet en JSONB
                 'adresse': presentation.get('adresse_principale'),
                 'forme_juridique': infos_juridiques.get('forme_juridique'),
-                'numero_tva': infos_juridiques.get('numero_tva'),
+                # 'numero_tva' removed (redundant)
                 'date_creation': presentation.get('date_creation')
             }
             
@@ -489,7 +565,7 @@ class DashboardCollector:
                     'data': stmt.excluded.data,
                     'adresse': stmt.excluded.adresse,
                     'forme_juridique': stmt.excluded.forme_juridique,
-                    'numero_tva': stmt.excluded.numero_tva,
+                    # 'numero_tva' removed from upsert
                     'date_creation': stmt.excluded.date_creation
                 }
             )
@@ -528,7 +604,7 @@ class DashboardCollector:
                 'data': entreprise.data,  # Données complètes
                 'adresse': entreprise.adresse,
                 'forme_juridique': entreprise.forme_juridique,
-                'numero_tva': entreprise.numero_tva,
+                # 'numero_tva' intentionally omitted from API response
                 'date_creation': entreprise.date_creation
             }
         finally:
@@ -558,6 +634,84 @@ class DashboardCollector:
                 })
             
             return results
+        finally:
+            session.close()
+
+    def search_entreprises_paginated(self, query, page=1, per_page=20):
+        """Recherche paginée des entreprises par numéro ou dénomination.
+
+        Retourne un dict avec `total`, `page`, `per_page` et `results`.
+        """
+        session = self.Session()
+        try:
+            base_q = session.query(Entreprise).filter(
+                (Entreprise.numero_entreprise.like(f'%{query}%')) |
+                (Entreprise.denomination.ilike(f'%{query}%'))
+            )
+            total = base_q.count()
+            offset = max(0, (page - 1) * per_page)
+            entreprises = base_q.order_by(Entreprise.last_update.desc()).limit(per_page).offset(offset).all()
+
+            results = []
+            for e in entreprises:
+                results.append({
+                    'numero_entreprise': e.numero_entreprise,
+                    'denomination': e.denomination,
+                    'status': e.status,
+                    'adresse': e.adresse,
+                    'forme_juridique': e.forme_juridique,
+                    'last_update': e.last_update.isoformat() if e.last_update else None
+                })
+
+            return {'total': total, 'page': page, 'per_page': per_page, 'results': results}
+        finally:
+            session.close()
+    
+    def list_all_entreprises(self, limit=100):
+        """Liste toutes les entreprises (limitées)."""
+        session = self.Session()
+        try:
+            entreprises = session.query(Entreprise).order_by(
+                Entreprise.last_update.desc()
+            ).limit(limit).all()
+            
+            results = []
+            for e in entreprises:
+                results.append({
+                    'numero_entreprise': e.numero_entreprise,
+                    'denomination': e.denomination,
+                    'status': e.status,
+                    'adresse': e.adresse,
+                    'forme_juridique': e.forme_juridique,
+                    'last_update': e.last_update.isoformat() if e.last_update else None
+                })
+            
+            return results
+        finally:
+            session.close()
+
+    def list_all_entreprises_paginated(self, page=1, per_page=20):
+        """Liste paginée de toutes les entreprises ordonnées par `last_update`."""
+        session = self.Session()
+        try:
+            total = session.query(Entreprise).count()
+            offset = max(0, (page - 1) * per_page)
+            entreprises = session.query(Entreprise).order_by(
+                Entreprise.last_update.desc()
+            ).limit(per_page).offset(offset).all()
+
+            results = []
+            for e in entreprises:
+                results.append({
+                    'numero_entreprise': e.numero_entreprise,
+                    'denomination': e.denomination,
+                    'status': e.status,
+                    'adresse': e.adresse,
+                    'forme_juridique': e.forme_juridique,
+                    'last_update': e.last_update.isoformat() if e.last_update else None
+                })
+
+            return {'total': total, 'page': page, 'per_page': per_page, 'results': results}
         finally:
             session.close()
     
@@ -658,6 +812,244 @@ class DashboardCollector:
             **ips,
             **dags
         }
+    
+    # === Gestion de la file d'attente avec priorités ===
+    
+    def add_to_queue(self, enterprise_number, priority=1, requested_by='system'):
+        """Ajoute une entreprise à la file d'attente.
+        
+        Args:
+            enterprise_number: Numéro d'entreprise
+            priority: 1=normal, 2=haute (recherche manuelle), 3=très haute
+            requested_by: 'system', 'user', 'manual'
+        
+        Returns:
+            dict: Résultat de l'ajout
+        """
+        session = self.Session()
+        try:
+            # Vérifier si l'entreprise est déjà en queue
+            existing = session.query(ScrapingQueue).filter(
+                ScrapingQueue.enterprise_number == enterprise_number
+            ).first()
+            
+            if existing:
+                # Si existe et que la nouvelle priorité est plus haute, mettre à jour
+                if priority > existing.priority:
+                    existing.priority = priority
+                    existing.requested_by = requested_by
+                    existing.added_at = datetime.now()
+                    session.commit()
+                    logger.info(f"Priorité augmentée pour {enterprise_number}: {priority}")
+                    return {'success': True, 'action': 'priority_updated', 'enterprise_number': enterprise_number}
+                else:
+                    return {'success': True, 'action': 'already_queued', 'enterprise_number': enterprise_number}
+            
+            # Vérifier si déjà scrapé (existe dans la table entreprises)
+            entreprise_exists = session.query(Entreprise).filter(
+                Entreprise.numero_entreprise == enterprise_number
+            ).first()
+            
+            if entreprise_exists:
+                return {'success': True, 'action': 'already_scraped', 'enterprise_number': enterprise_number}
+            
+            # Ajouter à la queue
+            queue_item = ScrapingQueue(
+                enterprise_number=enterprise_number,
+                priority=priority,
+                status='pending',
+                requested_by=requested_by
+            )
+            session.add(queue_item)
+            session.commit()
+            
+            logger.info(f"Ajouté à la queue: {enterprise_number} (priorité: {priority})")
+            return {'success': True, 'action': 'added', 'enterprise_number': enterprise_number}
+            
+        except Exception as e:
+            session.rollback()
+            logger.exception(f"Erreur ajout à la queue: {e}")
+            return {'success': False, 'error': str(e)}
+        finally:
+            session.close()
+    
+    def get_queue_stats(self):
+        """Récupère les statistiques de la file d'attente."""
+        session = self.Session()
+        try:
+            total_pending = session.query(ScrapingQueue).filter(
+                ScrapingQueue.status == 'pending'
+            ).count()
+            
+            total_processing = session.query(ScrapingQueue).filter(
+                ScrapingQueue.status == 'processing'
+            ).count()
+            
+            total_completed = session.query(ScrapingQueue).filter(
+                ScrapingQueue.status == 'completed'
+            ).count()
+            
+            total_failed = session.query(ScrapingQueue).filter(
+                ScrapingQueue.status == 'failed'
+            ).count()
+            
+            high_priority = session.query(ScrapingQueue).filter(
+                ScrapingQueue.status == 'pending',
+                ScrapingQueue.priority >= 2
+            ).count()
+            
+            return {
+                'total_pending': total_pending,
+                'total_processing': total_processing,
+                'total_completed': total_completed,
+                'total_failed': total_failed,
+                'high_priority': high_priority,
+                'total_queue': total_pending + total_processing
+            }
+        finally:
+            session.close()
+    
+    def get_queue_items(self, status='pending', limit=100, page=1, per_page=20):
+        """Récupère les éléments de la file d'attente.
+        
+        Args:
+            status: Filtre par statut (pending, processing, completed, failed)
+            limit: Limite de résultats (deprecated, use pagination)
+            page: Numéro de page
+            per_page: Éléments par page
+        
+        Returns:
+            dict: {total, page, per_page, items}
+        """
+        session = self.Session()
+        try:
+            query = session.query(ScrapingQueue)
+            
+            if status:
+                query = query.filter(ScrapingQueue.status == status)
+            
+            # Trier par priorité décroissante, puis par date d'ajout
+            query = query.order_by(
+                ScrapingQueue.priority.desc(),
+                ScrapingQueue.added_at.asc()
+            )
+            
+            total = query.count()
+            offset = max(0, (page - 1) * per_page)
+            items = query.limit(per_page).offset(offset).all()
+            
+            results = []
+            for item in items:
+                results.append({
+                    'id': item.id,
+                    'enterprise_number': item.enterprise_number,
+                    'priority': item.priority,
+                    'priority_label': self._get_priority_label(item.priority),
+                    'status': item.status,
+                    'added_at': item.added_at.isoformat() if item.added_at else None,
+                    'started_at': item.started_at.isoformat() if item.started_at else None,
+                    'completed_at': item.completed_at.isoformat() if item.completed_at else None,
+                    'attempts': item.attempts,
+                    'last_error': item.last_error,
+                    'requested_by': item.requested_by
+                })
+            
+            return {
+                'total': total,
+                'page': page,
+                'per_page': per_page,
+                'items': results
+            }
+        finally:
+            session.close()
+    
+    def _get_priority_label(self, priority):
+        """Retourne le label de priorité."""
+        if priority >= 3:
+            return 'Très haute'
+        elif priority == 2:
+            return 'Haute'
+        else:
+            return 'Normale'
+    
+    def update_queue_item_status(self, enterprise_number, status, error=None):
+        """Met à jour le statut d'un élément de la queue."""
+        session = self.Session()
+        try:
+            item = session.query(ScrapingQueue).filter(
+                ScrapingQueue.enterprise_number == enterprise_number
+            ).first()
+            
+            if not item:
+                return {'success': False, 'error': 'not_found'}
+            
+            item.status = status
+            
+            if status == 'processing':
+                item.started_at = datetime.now()
+                item.attempts += 1
+            elif status == 'completed':
+                item.completed_at = datetime.now()
+            elif status == 'failed':
+                item.completed_at = datetime.now()
+                item.last_error = error
+            
+            session.commit()
+            return {'success': True, 'enterprise_number': enterprise_number}
+            
+        except Exception as e:
+            session.rollback()
+            logger.exception(f"Erreur mise à jour queue: {e}")
+            return {'success': False, 'error': str(e)}
+        finally:
+            session.close()
+    
+    def remove_from_queue(self, enterprise_number):
+        """Supprime une entreprise de la file d'attente."""
+        session = self.Session()
+        try:
+            item = session.query(ScrapingQueue).filter(
+                ScrapingQueue.enterprise_number == enterprise_number
+            ).first()
+            
+            if not item:
+                return {'success': False, 'error': 'not_found'}
+            
+            session.delete(item)
+            session.commit()
+            
+            logger.info(f"Supprimé de la queue: {enterprise_number}")
+            return {'success': True, 'enterprise_number': enterprise_number}
+            
+        except Exception as e:
+            session.rollback()
+            logger.exception(f"Erreur suppression queue: {e}")
+            return {'success': False, 'error': str(e)}
+        finally:
+            session.close()
+    
+    def get_next_to_scrape(self, limit=1):
+        """Récupère les prochaines entreprises à scraper (priorité décroissante)."""
+        session = self.Session()
+        try:
+            items = session.query(ScrapingQueue).filter(
+                ScrapingQueue.status == 'pending'
+            ).order_by(
+                ScrapingQueue.priority.desc(),
+                ScrapingQueue.added_at.asc()
+            ).limit(limit).all()
+            
+            results = []
+            for item in items:
+                results.append({
+                    'enterprise_number': item.enterprise_number,
+                    'priority': item.priority,
+                    'added_at': item.added_at.isoformat() if item.added_at else None
+                })
+            
+            return results
+        finally:
+            session.close()
 
 
 def update_dashboard_stats(data_dir=None):

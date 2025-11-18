@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Admin - KBO</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <h1>🏢 KBO Dashboard</h1>
+            </div>
+            <div class="nav-links">
+                <a href="/">Recherche</a>
+                <a href="/dashboard" class="active">Dashboard Admin</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container">
+        <div class="dashboard-header">
+            <h2>📊 Dashboard Administrateur</h2>
+            <div class="refresh-info">
+                <span id="lastUpdate">Dernière mise à jour: --</span>
+                <button id="refreshBtn" class="btn-refresh">🔄 Actualiser</button>
+            </div>
+        </div>
+
+        <!-- État général -->
+        <section class="stats-overview">
+            <div class="stat-card">
+                <div class="stat-icon">✅</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="totalScraped">--</div>
+                    <div class="stat-label">Entreprises scrapées</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">💾</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="totalInDB">--</div>
+                    <div class="stat-label">Entreprises en BDD</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">⏳</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="totalQueue">--</div>
+                    <div class="stat-label">En file d'attente</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">🔄</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="totalRetrying">--</div>
+                    <div class="stat-label">En retry</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Performance -->
+        <section class="dashboard-section">
+            <h3>⚡ Indicateurs de performance</h3>
+            <div class="performance-grid">
+                <div class="info-card">
+                    <h4>Taux de réussite</h4>
+                    <div class="metric-value" id="successRate">--%</div>
+                </div>
+                <div class="info-card">
+                    <h4>Requêtes/minute (moyenne)</h4>
+                    <div class="metric-value" id="avgRequestsPerMin">--</div>
+                </div>
+                <div class="info-card">
+                    <h4>Dernière heure</h4>
+                    <div class="metric-detail">
+                        <span id="totalRequestsHour">--</span> requêtes
+                        (<span id="successRequestsHour">--</span> succès)
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- État des proxies -->
+        <section class="dashboard-section">
+            <h3>🌐 État des proxies</h3>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Proxy IP</th>
+                            <th>Total Requêtes</th>
+                            <th>Succès</th>
+                            <th>Échecs</th>
+                            <th>Statut</th>
+                            <th>Dernière utilisation</th>
+                        </tr>
+                    </thead>
+                    <tbody id="proxiesTableBody">
+                        <tr>
+                            <td colspan="6" class="text-center">Chargement...</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div id="proxiesPagination" class="pagination-controls" style="margin-top:0.5rem;"></div>
+            </div>
+        </section>
+
+        <!-- File d'attente -->
+        <section class="dashboard-section">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                <h3 style="margin: 0;">📋 File d'attente de scraping</h3>
+                <div class="queue-filters">
+                    <label style="margin-right: 0.5rem; color: var(--text-secondary); font-weight: 500;">Filtrer:</label>
+                    <select id="queueStatusFilter" class="filter-select">
+                        <option value="all">Tous les statuts</option>
+                        <option value="pending" selected>En attente</option>
+                        <option value="processing">En cours</option>
+                        <option value="failed">Échecs</option>
+                    </select>
+                    <select id="queuePriorityFilter" class="filter-select" style="margin-left: 0.5rem;">
+                        <option value="all">Toutes priorités</option>
+                        <option value="high">Priorité haute (≥2)</option>
+                        <option value="normal">Priorité normale (1)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="queue-summary">
+                <div class="queue-stat">
+                    <span class="queue-stat-value" id="queuePending">--</span>
+                    <span class="queue-stat-label">En attente</span>
+                </div>
+                <div class="queue-stat">
+                    <span class="queue-stat-value" id="queueProcessing">--</span>
+                    <span class="queue-stat-label">En cours</span>
+                </div>
+                <div class="queue-stat">
+                    <span class="queue-stat-value" id="queueHighPriority">--</span>
+                    <span class="queue-stat-label">Priorité haute</span>
+                </div>
+            </div>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Numéro Entreprise</th>
+                            <th>Priorité</th>
+                            <th>Statut</th>
+                            <th>Ajouté le</th>
+                            <th>Source</th>
+                            <th>Tentatives</th>
+                            <th>DAG / Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="queueTableBody">
+                        <tr>
+                            <td colspan="7" class="text-center">Chargement...</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div id="queuePagination" class="pagination-controls" style="margin-top:0.5rem;"></div>
+            </div>
+        </section>
+
+        <!-- Assignments DAG -->
+        <section class="dashboard-section">
+            <h3>🎯 Assignments DAG (Temps réel)</h3>
+            <div id="dagAssignments" class="dag-assignments-grid">
+                <p class="text-center" style="color: var(--text-secondary); padding: 2rem;">Chargement...</p>
+            </div>
+        </section>
+
+        <!-- Échecs récents -->
+        <section class="dashboard-section">
+            <h3>⚠️ Échecs récents</h3>
+            <div class="failures-stats" id="failuresByType"></div>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Entreprise</th>
+                            <th>DAG</th>
+                            <th>Type d'erreur</th>
+                            <th>Message</th>
+                        </tr>
+                    </thead>
+                    <tbody id="failuresTableBody">
+                        <tr>
+                            <td colspan="5" class="text-center">Chargement...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Rapport de validation -->
+        <section class="dashboard-section">
+            <h3>✅ Qualité des données</h3>
+            <div id="validationReport" class="validation-report">
+                <p>Chargement du rapport de validation...</p>
+            </div>
+        </section>
+    </main>
+
+    <!-- Socket.IO pour les WebSockets -->
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="{{ url_for('static', filename='js/websocket-client.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>
